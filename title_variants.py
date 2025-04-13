@@ -113,7 +113,7 @@ def generate_title_variants(title: str) -> list:
             title_before_without_brackets = re.sub(r'\([^()]*\)', '', title_before_bracket)
             word_count = len(title_before_without_brackets.strip().split())
 
-            # Middle variant
+            # My middle variant lol
             if word_count < len(base_words):
                 middle_variant = ' '.join(base_words[:word_count]) + ' ' + middle_content + ' ' + ' '.join(
                     base_words[word_count:])
@@ -147,7 +147,7 @@ def generate_title_variants(title: str) -> list:
 
 def test_title(title):
     """Test function to display variants for a given title."""
-    print(f"\nOriginal Title: {title}")
+    print(f"\nAPRA Title: {title}")
     print("Variants:")
     for variant in generate_title_variants(title):
         print(f"  - {variant}")
