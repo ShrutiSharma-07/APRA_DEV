@@ -3,321 +3,243 @@ import difflib
 import pandas as pd
 import numpy as np
 from snowflake.snowpark import Session
-from snowflake.snowpark.functions import col, lit
+from snowflake.snowpark.functions import col, lit, regexp_replace, upper, trim, when
 
 
 # Function to clean artist names by removing non-alphanumeric characters
 def clean_artist_name(name):
     if name is None or pd.isna(name):
         return ""
-    # Remove non-alphanumeric characters (except spaces)
-    cleaned = re.sub(r'[^a-zA-Z0-9 ]', '', str(name))
+
+    # First, preserve spaces around special characters by replacing them with spaces
+    name_with_spaces = re.sub(r'[\'"`\-_&+]', ' ', str(name))
+
+    # Then remove remaining non-alphanumeric characters (except spaces)
+    cleaned = re.sub(r'[^a-zA-Z0-9 ]', '', name_with_spaces)
+
+    # Normalize spaces (convert multiple spaces to single space)
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+
     # If the result is just spaces, return the original name
     if cleaned.strip() == "":
         return str(name)
+
     return cleaned.strip()
 
 
-# Improved similarity function with more accurate scoring
-def calculate_similarity(str1, str2):
-    if not str1 or not str2 or pd.isna(str1) or pd.isna(str2):
+def match_with_delimiter_handling(adc_name, mazooka_name):
+    if not adc_name or not mazooka_name:
         return 0
 
-    str1 = str(str1).upper()
-    str2 = str(str2).upper()
+    # Store original names for logging (if needed)
+    adc_original = str(adc_name).strip()
+    mazooka_original = str(mazooka_name).strip()
 
-    # Use difflib's SequenceMatcher but with stricter scoring
-    basic_score = difflib.SequenceMatcher(None, str1, str2).ratio()
+    # Clean and normalize inputs - uppercase and trim
+    adc_upper = adc_original.upper()
+    mazooka_upper = mazooka_original.upper()
 
-    # Penalize significant length differences more severely
-    len_ratio = min(len(str1), len(str2)) / max(len(str1), len(str2))
-    if len_ratio < 0.7:  # If lengths differ by more than 30%
-        basic_score *= len_ratio
+    # Define delimiters to check
+    delimiters = ['|', '/', '#', '\\', ',', ';']
 
-    return round(basic_score, 2)
+    # APPROACH 1: First try direct split and comparison before any cleaning
+    # This should handle the specific issue with examples like "COUNT BASIE / ROY ELDRIDGE"
+    if any(d in adc_upper for d in delimiters):
+        # Create a normalized version with all delimiters converted to a standard one
+        normalized_adc = adc_upper
+        for d in delimiters:
+            normalized_adc = normalized_adc.replace(d, '|')
 
+        # Split by the normalized delimiter and strip each part
+        split_parts = [part.strip() for part in normalized_adc.split('|')]
+        split_parts = [part for part in split_parts if part]  # Remove empty parts
 
-# Function to handle artist names with "/"
-def match_with_slash_handling(adc_name, mazooka_name):
-    # First try matching the full names
-    full_match_score = calculate_similarity(adc_name, mazooka_name)
+        # Check each part directly against the Mazooka name
+        for part in split_parts:
+            if part.strip() == mazooka_upper:
+                return 1.0  # EXIT EARLY with perfect score if any split part matches exactly
 
-    # If the score is very high, return it immediately
-    if full_match_score > 0.9:
-        return full_match_score
+    # APPROACH 2: Standard processing
+    # Replace common special characters with spaces first (preserves structure)
+    adc_spaced = re.sub(r'[\'"`\-_&+]', ' ', adc_upper)
+    mazooka_spaced = re.sub(r'[\'"`\-_&+]', ' ', mazooka_upper)
 
-    # If either name contains "/", try matching individual parts
-    if "/" in str(adc_name) or "/" in str(mazooka_name):
-        adc_parts = [part.strip() for part in str(adc_name).split("/")] if "/" in str(adc_name) else [adc_name]
-        mazooka_parts = [part.strip() for part in str(mazooka_name).split("/")] if "/" in str(mazooka_name) else [
-            mazooka_name]
+    # Then clean remaining non-alphanumeric characters
+    adc_clean_spaced = re.sub(r'[^a-zA-Z0-9 ]', '', adc_spaced).strip()
+    mazooka_clean_spaced = re.sub(r'[^a-zA-Z0-9 ]', '', mazooka_spaced).strip()
 
-        # Compare each part combination
-        part_scores = []
-        for adc_part in adc_parts:
-            for mazooka_part in mazooka_parts:
-                if len(adc_part) > 2 and len(mazooka_part) > 2:  # Only consider meaningful parts
-                    part_score = calculate_similarity(adc_part, mazooka_part)
-                    # Only consider high-quality part matches
-                    if part_score > 0.75:
-                        part_scores.append(part_score)
+    # Normalize spaces (convert multiple spaces to single space)
+    adc_clean_spaced = re.sub(r'\s+', ' ', adc_clean_spaced)
+    mazooka_clean_spaced = re.sub(r'\s+', ' ', mazooka_clean_spaced)
 
-        # If we have valid part scores, return the best one
-        if part_scores:
-            return max(part_scores)
+    # Also try direct removal of special characters
+    adc_clean_direct = re.sub(r'[^a-zA-Z0-9 ]', '', adc_upper).strip()
+    mazooka_clean_direct = re.sub(r'[^a-zA-Z0-9 ]', '', mazooka_upper).strip()
 
-    return full_match_score
+    # Normalize spaces for direct method too
+    adc_clean_direct = re.sub(r'\s+', ' ', adc_clean_direct)
+    mazooka_clean_direct = re.sub(r'\s+', ' ', mazooka_clean_direct)
 
-
-# Improved function to handle artist names with "&" or "and"
-def handle_band_names(name1, name2):
-    name1_upper = str(name1).upper()
-    name2_upper = str(name2).upper()
-
-    # Check for exact match first
-    if name1_upper == name2_upper:
+    # Check exact match using both cleaning approaches
+    if adc_clean_direct == mazooka_clean_direct or adc_clean_spaced == mazooka_clean_spaced:
         return 1.0
 
-    # Extract main artist from "ARTIST & THE BAND" or "ARTIST AND THE BAND" format
-    name1_parts = re.split(r'\s+(&|\band\b)\s+', name1_upper)
-    name2_parts = re.split(r'\s+(&|\band\b)\s+', name2_upper)
+    # Handle "THE" prefix removal for exact matching
+    adc_no_the = adc_clean_direct[4:] if adc_clean_direct.startswith("THE ") else adc_clean_direct
+    mazooka_no_the = mazooka_clean_direct[4:] if mazooka_clean_direct.startswith("THE ") else mazooka_clean_direct
 
-    # Get the main artist names (before "&" or "and")
-    name1_main = name1_parts[0].strip() if name1_parts else name1_upper
-    name2_main = name2_parts[0].strip() if name2_parts else name2_upper
+    if adc_no_the == mazooka_no_the and len(adc_no_the) > 3:
+        return 1.0  # Perfect score for matches after "THE" removal
 
-    # Calculate scores
-    full_score = calculate_similarity(name1_upper, name2_upper)
+    # Check for first/last name reversed matches
+    adc_words = [w for w in adc_clean_spaced.split() if w]
+    mazooka_words = [w for w in mazooka_clean_spaced.split() if w]
 
-    # Only consider main name match if the main names are substantial
-    main_score = 0
-    if len(name1_main) > 3 and len(name2_main) > 3:
-        main_score = calculate_similarity(name1_main, name2_main)
-        # Boost main score only if it's very good
-        if main_score > 0.9:
-            main_score = max(0.85, main_score)  # At least 0.85 for good main name match
+    if len(adc_words) > 0 and len(mazooka_words) > 0:
+        # Check if all words in both names match regardless of order
+        if sorted(adc_words) == sorted(mazooka_words):
+            return 1.0
 
-    # If one name has additional parts and main names match well, give good score
-    if main_score > 0.9 and len(name1_parts) != len(name2_parts):
-        return max(0.8, full_score)  # Substantial but not perfect match
+            # APPROACH 3: Advanced delimiter handling with clean data (ENHANCED)
+    # Also try with cleaned versions of the parts
+    if any(d in adc_upper for d in delimiters):
+        normalized_adc = adc_upper
+        for d in delimiters:
+            normalized_adc = normalized_adc.replace(d, '|')
 
-    return max(full_score, main_score * 0.9)  # Slightly discount main name matches
+        # Split by the normalized delimiter and process each part
+        split_parts = [part.strip() for part in normalized_adc.split('|')]
+        split_parts = [part for part in split_parts if part]  # Remove empty parts
 
+        # Clean each part for comparison
+        for part in split_parts:
+            # Clean the part just like we cleaned the full names
+            part_spaced = re.sub(r'[\'"`\-_&+]', ' ', part)
+            part_clean = re.sub(r'[^a-zA-Z0-9 ]', '', part_spaced).strip()
+            part_clean = re.sub(r'\s+', ' ', part_clean)
 
-# New function to check for first/last name or initials match with stricter scoring
-def check_name_parts_match(name1, name2):
-    if not name1 or not name2:
-        return 0
+            # Try comparing cleaned part with cleaned Mazooka name
+            if part_clean == mazooka_clean_direct:
+                return 1.0
 
-    name1 = str(name1).upper()
-    name2 = str(name2).upper()
+            # Also try with "THE" removed
+            part_no_the = part_clean[4:] if part_clean.startswith("THE ") else part_clean
+            if part_no_the == mazooka_no_the and len(part_no_the) > 3:
+                return 1.0
 
-    # Split into words
-    name1_parts = name1.split()
-    name2_parts = name2.split()
+    # APPROACH 4: Also try matching Mazooka name against each word-permutation of the split parts
+    if any(d in adc_upper for d in delimiters):
+        normalized_adc = adc_upper
+        for d in delimiters:
+            normalized_adc = normalized_adc.replace(d, '|')
 
-    # If either name has no parts, return 0
-    if not name1_parts or not name2_parts:
-        return 0
+        # Split and clean each part
+        cleaned_parts = []
+        for part in [p.strip() for p in normalized_adc.split('|') if p.strip()]:
+            part_spaced = re.sub(r'[\'"`\-_&+]', ' ', part)
+            part_clean = re.sub(r'[^a-zA-Z0-9 ]', '', part_spaced).strip()
+            part_clean = re.sub(r'\s+', ' ', part_clean)
+            if part_clean:
+                cleaned_parts.append(part_clean)
 
-    # Check for exact matches of any parts
-    exact_matches = sum(1 for p1 in name1_parts if any(p1 == p2 for p2 in name2_parts))
+        # Try all permutations (for handling cases like "ROY ELDRIDGE / COUNT BASIE" vs "BASIE COUNT")
+        for part in cleaned_parts:
+            part_words = part.split()
+            if len(part_words) > 1:  # Only try permutations if there are multiple words
+                # Try with words in reverse order
+                reversed_part = ' '.join(reversed(part_words))
+                if reversed_part == mazooka_clean_direct:
+                    return 1.0
 
-    # Calculate percentage of exact matches, but be stricter
-    match_percent = exact_matches / max(len(name1_parts), len(name2_parts))
+    # APPROACH 5: Try with the cleaned COMBINED version
+    # This combines all parts after cleaning into a single string
+    if any(d in adc_upper for d in delimiters):
+        normalized_adc = adc_upper
+        for d in delimiters:
+            normalized_adc = normalized_adc.replace(d, ' ')  # Replace ALL delimiters with spaces
 
-    # Require at least 50% of words to match and penalize common single-word names
-    if match_percent < 0.5 or (match_percent == 1.0 and len(name1_parts) == 1 and len(name1_parts[0]) < 5):
-        match_percent *= 0.7  # Reduce score
+        # Clean the combined string
+        combined_clean = re.sub(r'[^a-zA-Z0-9 ]', '', normalized_adc).strip()
+        combined_clean = re.sub(r'\s+', ' ', combined_clean)
 
-    # Check for initials match - but only if names have multiple parts
-    initials_score = 0
-    if len(name1_parts) >= 2 and len(name2_parts) >= 2:
-        name1_initials = ''.join(p[0] for p in name1_parts if p)
-        name2_initials = ''.join(p[0] for p in name2_parts if p)
+        # Check if Mazooka name is an exact match to any part of the combined string
+        if mazooka_clean_direct in combined_clean.split():
+            return 1.0
 
-        if len(name1_initials) >= 2 and len(name2_initials) >= 2:
-            initials_match = calculate_similarity(name1_initials, name2_initials)
-            # Only consider high-quality initial matches
-            initials_score = initials_match * 0.7 if initials_match > 0.8 else 0
+        # Also check if mazooka name is a complete substring
+        if mazooka_clean_direct in combined_clean:
+            # If mazooka name is substantial portion of the combined string
+            if len(mazooka_clean_direct) / len(combined_clean) > 0.7:
+                return 1.0
 
-    # Check first/last name match (if names have at least 2 parts)
-    first_last_score = 0
-    if len(name1_parts) >= 2 and len(name2_parts) >= 2:
-        # First name match
-        first_match = calculate_similarity(name1_parts[0], name2_parts[0])
-        # Last name match
-        last_match = calculate_similarity(name1_parts[-1], name2_parts[-1])
+    # Check for partial matches
+    if adc_clean_spaced in mazooka_clean_spaced or mazooka_clean_spaced in adc_clean_spaced:
+        # Calculate what percentage of the longer string is matched
+        longer = max(len(adc_clean_spaced), len(mazooka_clean_spaced))
+        shorter = min(len(adc_clean_spaced), len(mazooka_clean_spaced))
 
-        # Only consider if both first and last have decent match
-        if first_match > 0.7 and last_match > 0.7:
-            first_last_score = (first_match + last_match) / 2
+        if shorter / longer >= 0.7:  # If at least 70% of the longer string is matched
+            return 0.9  # High score for substantial substring match
         else:
-            first_last_score = 0  # Both need to match well
+            # Calculate a proportional score
+            match_ratio = shorter / longer
+            # Ensure the score is between 0.5 and 0.7 for partial matches
+            return 0.5 + (0.4 * match_ratio)
 
-    # Return the best score but cap if match is not strong
-    best_score = max(match_percent, initials_score, first_last_score)
-    return min(best_score, 0.9) if best_score < 0.9 else best_score  # Cap at 0.9 unless perfect
+    # For other cases, use sequence matching for basic similarity
+    similarity_score = difflib.SequenceMatcher(None, adc_clean_spaced, mazooka_clean_spaced).ratio()
 
-
-# Improved function to handle prefix/suffix removal
-def check_with_prefix_suffix_removal(name1, name2):
-    prefixes = ["THE ", "DJ ", "MC ", "DR ", "MR ", "MS ", "MISS ", "MRS ", "SIR "]
-    suffixes = [" BAND", " ORCHESTRA", " ENSEMBLE", " QUARTET", " TRIO", " DUO", " GROUP"]
-
-    # Create versions with prefixes removed
-    name1_no_prefix = str(name1).upper()
-    name2_no_prefix = str(name2).upper()
-
-    for prefix in prefixes:
-        if name1_no_prefix.startswith(prefix):
-            name1_no_prefix = name1_no_prefix[len(prefix):]
-        if name2_no_prefix.startswith(prefix):
-            name2_no_prefix = name2_no_prefix[len(prefix):]
-
-    # Create versions with suffixes removed
-    name1_no_suffix = name1_no_prefix
-    name2_no_suffix = name2_no_prefix
-
-    for suffix in suffixes:
-        if name1_no_suffix.endswith(suffix):
-            name1_no_suffix = name1_no_suffix[:-len(suffix)]
-        if name2_no_suffix.endswith(suffix):
-            name2_no_suffix = name2_no_suffix[:-len(suffix)]
-
-    # Calculate scores
-    original_score = calculate_similarity(str(name1).upper(), str(name2).upper())
-
-    # Only consider prefix/suffix removal if it substantially improves match
-    no_prefix_score = calculate_similarity(name1_no_prefix, name2_no_prefix)
-    no_suffix_score = calculate_similarity(name1_no_suffix, name2_no_suffix)
-
-    # Use modified score only if the improvement is significant and score is good
-    if no_prefix_score > original_score + 0.2 and no_prefix_score > 0.8:
-        return no_prefix_score
-    elif no_suffix_score > original_score + 0.2 and no_suffix_score > 0.8:
-        return no_suffix_score
-
-    return original_score  # Default to original score
-
-
-# Improved comprehensive match function that combines all methods with better validation
-def comprehensive_match_score(adc_name, mazooka_name):
-    if not adc_name or not mazooka_name or pd.isna(adc_name) or pd.isna(mazooka_name):
+    # Adjust to match examples like "QUINCY JONES" vs "QUINCY JONES & THE BAND"
+    if similarity_score > 0.5:
+        return round(similarity_score, 2)
+    else:
         return 0
 
-    # Check for exact match (case insensitive)
-    if str(adc_name).upper() == str(mazooka_name).upper():
-        return 1.0
-
-    # Check for "THE" prefix differences - if exact match after removing "THE", give high score
-    adc_no_the = str(adc_name).upper()
-    mazooka_no_the = str(mazooka_name).upper()
-
-    if adc_no_the.startswith("THE "):
-        adc_no_the = adc_no_the[4:]
-    if mazooka_no_the.startswith("THE "):
-        mazooka_no_the = mazooka_no_the[4:]
-
-    if adc_no_the == mazooka_no_the and len(adc_no_the) > 4:
-        return 0.95  # Very high but not perfect for "THE" differences
-
-    # Apply all matching methods
-    similarity_score = calculate_similarity(adc_name, mazooka_name)
-    slash_score = match_with_slash_handling(adc_name, mazooka_name)
-    band_score = handle_band_names(adc_name, mazooka_name)
-    name_parts_score = check_name_parts_match(adc_name, mazooka_name)
-    prefix_suffix_score = check_with_prefix_suffix_removal(adc_name, mazooka_name)
-
-    # Check word count - if different, be more cautious
-    adc_word_count = len(str(adc_name).split())
-    mazooka_word_count = len(str(mazooka_name).split())
-
-    word_count_difference = abs(adc_word_count - mazooka_word_count)
-
-    # Penalize mismatched word counts unless another method gives high score
-    if word_count_difference > 1:
-        similarity_score *= (1 - 0.1 * min(word_count_difference, 3))
-
-    # Special case: Check for common but unrelated short artist names
-    short_match_penalty = 1.0
-    if (len(str(adc_name)) <= 5 or len(str(mazooka_name)) <= 5) and similarity_score < 0.9:
-        short_match_penalty = 0.7  # Penalize short name matches
-
-    # Calculate final score with more stringent logic
-
-    # 1. If any specialized method gives a very high score (>0.9), trust it
-    high_scores = [s for s in [slash_score, band_score, name_parts_score, prefix_suffix_score] if s > 0.9]
-    if high_scores:
-        return max(high_scores)
-
-    # 2. For names that are very different lengths, be suspicious of matches
-    len_ratio = min(len(str(adc_name)), len(str(mazooka_name))) / max(len(str(adc_name)), len(str(mazooka_name)))
-
-    # Strict length ratio check
-    if len_ratio < 0.6:
-        # For significant length differences, require higher score from specialized methods
-        specialized_score = max(slash_score, band_score, name_parts_score, prefix_suffix_score)
-        if specialized_score < 0.7:  # If no specialized method gives good score for different lengths
-            return similarity_score * 0.7  # Heavily discount general similarity
-
-    # 3. Check for minimum character match (to avoid "MIL" matching "MILES" to "MILITARY")
-    min_length = min(len(str(adc_name)), len(str(mazooka_name)))
-
-    # Require longer common substrings for longer names
-    min_match_required = min(4, max(3, min_length // 3))
-
-    # Find longest common substring
-    def longest_common_substring(s1, s2):
-        s1, s2 = str(s1).upper(), str(s2).upper()
-        longest = ""
-        for i in range(len(s1)):
-            for length in range(1, len(s1) - i + 1):
-                substring = s1[i:i + length]
-                if substring in s2 and len(substring) > len(longest):
-                    longest = substring
-        return longest
-
-    longest_common = longest_common_substring(str(adc_name), str(mazooka_name))
-
-    # If longest common substring is too short, reduce score
-    if len(longest_common.strip()) < min_match_required:
-        similarity_score *= 0.5  # Significant reduction for minimal substring match
-
-    # 4. Check for common words that might cause false positives
-    common_words = ["THE", "BAND", "LIVE", "MUSIC", "SOUND", "BOYS", "GIRLS", "REMIX",
-                    "ORCHESTRA", "ENSEMBLE", "QUINTET", "GROUP", "DJ", "MC"]
-
-    adc_words = set(str(adc_name).upper().split())
-    mazooka_words = set(str(mazooka_name).upper().split())
-
-    # If the only overlap is common words, reduce score
-    common_overlap = adc_words.intersection(mazooka_words).intersection(common_words)
-    meaningful_overlap = adc_words.intersection(mazooka_words).difference(common_words)
-
-    if common_overlap and not meaningful_overlap:
-        similarity_score *= 0.4  # Heavy penalty for only matching common words
-
-    # 5. Combine scores with a weighted approach, preferring specialized methods
-    if similarity_score > 0.85:  # High basic similarity
-        return similarity_score
-    else:
-        # Take the best score from specialized methods, but with stricter threshold
-        specialized_score = max(slash_score, band_score, name_parts_score, prefix_suffix_score)
-
-        # Average with basic similarity to prevent outliers
-        combined_score = (specialized_score * 0.7 + similarity_score * 0.3) * short_match_penalty
-
-        # Ensure score makes sense in context of the names
-        final_score = min(combined_score, 0.95)  # Cap at 0.95 unless exact match
-
-        # Apply final threshold to prevent low-quality matches
-        return round(final_score, 2) if final_score >= 0.5 else similarity_score
+    # Function to expand delimited ADC names
 
 
-# New optimized function to match artists with ISWC indexing
+def expand_adc_delimited_names(adc_pandas_df):
+    """
+    Expands rows with delimited artist names into multiple rows,
+    one for each part of the delimited name.
+    """
+    expanded_rows = []
+
+    # Define delimiters
+    delimiters = ['|', '/', '#', '\\', ',', ';']
+
+    for _, row in adc_pandas_df.iterrows():
+        artist_name = row['NAME']
+
+        # First add the original name row
+        new_row = row.copy()
+        new_row['IS_VARIANT'] = 'ORIGINAL'
+        expanded_rows.append(new_row)
+
+        # Check if artist name contains delimiters
+        if any(d in str(artist_name) for d in delimiters):
+            # Normalize delimiters
+            artist_name_norm = re.sub(r'[#\\|,;]', '/', str(artist_name))
+            # Split and clean parts
+            parts = [part.strip() for part in artist_name_norm.split('/')]
+
+            # For each part, create a new row with the part as NAME
+            for part in parts:
+                if part and part != artist_name:
+                    new_row = row.copy()
+                    new_row['NAME'] = part
+                    new_row['CLEAN_NAME'] = clean_artist_name(part)
+                    new_row['IS_VARIANT'] = 'VARIANT'
+                    expanded_rows.append(new_row)
+
+    # Convert back to a DataFrame
+    expanded_df = pd.DataFrame(expanded_rows)
+    return expanded_df
+
+
+# Main function to match artists with ISWC indexing
 def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshold=0.6):
-    print("Starting artist matching with ISWC indexing...")
+    print("Initiating artist name matching with ISWC indexing...")
 
     # Convert to pandas for processing
     adc_pandas = adc_df.to_pandas()
@@ -328,13 +250,21 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
     adc_pandas['CLEAN_NAME'] = adc_pandas['NAME'].apply(clean_artist_name)
     mazooka_pandas['CLEAN_ARTIST_NAME'] = mazooka_pandas['ARTIST_NAME'].apply(clean_artist_name)
 
+    # Create expanded ADC dataframe with split names
+    print("Expanding delimited ADC artist names...")
+    expanded_adc = expand_adc_delimited_names(adc_pandas)
+    print(f"Expanded ADC dataset from {len(adc_pandas)} to {len(expanded_adc)} rows after splitting delimited names")
+
     # Group by ISWC to create indexes for faster matching
     print("Creating ISWC indexes...")
     adc_by_iswc = {}
     mazooka_by_iswc = {}
 
-    # Create ADC index by ISWC
-    for _, row in adc_pandas.iterrows():
+    # Also track original ADC rows (non-expanded)
+    original_adc_ids = set(adc_pandas['ADC_ARTIST_ID'])
+
+    # Create ADC index by ISWC using expanded dataset
+    for _, row in expanded_adc.iterrows():
         iswc = row.get('ISWC')
         if iswc and not pd.isna(iswc):
             if iswc not in adc_by_iswc:
@@ -353,8 +283,8 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
     common_iswcs = set(adc_by_iswc.keys()).intersection(set(mazooka_by_iswc.keys()))
     print(f"Found {len(common_iswcs)} common ISWCs between datasets")
 
-    # Track matched Mazooka artists to prevent duplicates
-    matched_mazooka_artists = set()
+    # Track matched to prevent duplicates
+    matched_combinations = set()  # (adc_id, mazooka_id) tuples
     results = []
 
     # Process each common ISWC
@@ -368,110 +298,52 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
 
         # For each ADC artist, find best Mazooka match within same ISWC
         for adc_row in adc_artists:
+            adc_id = adc_row.get('ADC_ARTIST_ID')
             adc_name = adc_row['CLEAN_NAME']
             adc_original_name = adc_row['NAME']
+
             best_match = None
             best_score = 0
 
-            # First check for exact matches
-            exact_matches = [m for m in mazooka_artists
-                             if m['CLEAN_ARTIST_NAME'].upper() == adc_name.upper()
-                             and m['ARTIST_NAME'] not in matched_mazooka_artists]
+            # Try exact match first
+            for mz_row in mazooka_artists:
+                # Check if this combination has already been matched
+                mz_id = mz_row.get('RECORDINGS_ID')
+                if (adc_id, mz_id) in matched_combinations:
+                    continue
 
-            if exact_matches:
-                best_match = exact_matches[0]
-                best_score = 1.0
-            else:
-                # Compare with all Mazooka artists for this ISWC
-                for mazooka_row in mazooka_artists:
-                    # Skip already matched artists
-                    if mazooka_row['ARTIST_NAME'] in matched_mazooka_artists:
+                mz_name = mz_row['ARTIST_NAME']
+
+                # Try exact match first (case insensitive)
+                if adc_original_name is not None and mz_name is not None and str(adc_original_name).upper() == str(
+                        mz_name).upper():
+                    best_match = mz_row
+                    best_score = 1.0
+                    break
+
+            # If no exact match, try using match_with_delimiter_handling
+            if best_score < 1.0:
+                for mz_row in mazooka_artists:
+                    mz_id = mz_row.get('RECORDINGS_ID')
+                    if (adc_id, mz_id) in matched_combinations:
                         continue
 
-                    mazooka_name = mazooka_row['CLEAN_ARTIST_NAME']
+                    mz_clean_name = mz_row['CLEAN_ARTIST_NAME']
+                    score = match_with_delimiter_handling(adc_name, mz_clean_name)
 
-                    # Use comprehensive matching algorithm
-                    score = comprehensive_match_score(adc_name, mazooka_name)
-
-                    # Keep track of the best match
                     if score > best_score:
                         best_score = score
-                        best_match = mazooka_row
+                        best_match = mz_row
 
-            # If we found a match with a good score
+            # If we found a good match
             if best_match is not None and best_score >= match_threshold:
-                matched_mazooka_artists.add(best_match['ARTIST_NAME'])
+                mz_id = best_match.get('RECORDINGS_ID')
+                matched_combinations.add((adc_id, mz_id))
 
-                results.append({
-                    'ADC_ARTIST_ID': adc_row.get('ADC_ARTIST_ID', None),
-                    'APRA_WORK_ID': adc_row.get('APRA_WORK_ID', None),
-                    'APRA_ARTIST_ID': adc_row.get('APRA_ARTIST_ID', None),
-                    'ADC_ARTIST_NAME': adc_original_name,
-                    'MAZOOKA_ARTIST_NAME': best_match['ARTIST_NAME'].upper(),
-                    'MATCH_SCORE': best_score,
-                    'RECORDINGS_ID': best_match.get('RECORDINGS_ID', None),
-                    'ISRC': best_match.get('ISRC', None),
-                    'ISWC': iswc
-                })
-
-    # For ADC artists without ISWC matches, still try to match by name
-    # First, collect ADC artists without ISWC matches
-    adc_without_iswc = []
-    for _, row in adc_pandas.iterrows():
-        iswc = row.get('ISWC')
-        if not iswc or pd.isna(iswc) or iswc not in common_iswcs:
-            adc_without_iswc.append(row)
-
-    # Now process these remaining artists in batches
-    if adc_without_iswc:
-        print(f"Processing {len(adc_without_iswc)} ADC artists without ISWC matches...")
-        batch_size = 500
-        for i in range(0, len(adc_without_iswc), batch_size):
-            batch = adc_without_iswc[i:i + batch_size]
-
-            for adc_row in batch:
-                adc_name = adc_row['CLEAN_NAME']
-                adc_original_name = adc_row['NAME']
-                best_match = None
-                best_score = 0
-
-                # Filter potential matches by name characteristics for efficiency
-                if len(adc_name) > 2:
-                    adc_len = len(adc_name)
-                    first_char = adc_name[0].upper() if adc_name else ''
-
-                    # Filter by length and first character
-                    potential_matches = [
-                        m for m in mazooka_pandas.to_dict('records')
-                        if m['ARTIST_NAME'] not in matched_mazooka_artists
-                           and abs(len(m['CLEAN_ARTIST_NAME']) - adc_len) <= 5
-                           and (not first_char or (
-                                    m['CLEAN_ARTIST_NAME'] and m['CLEAN_ARTIST_NAME'][0].upper() == first_char))
-                    ]
-
-                    # Limit potential matches
-                    potential_matches = potential_matches[:200] if len(potential_matches) > 200 else potential_matches
-                else:
-                    potential_matches = [
-                                            m for m in mazooka_pandas.to_dict('records')
-                                            if m['ARTIST_NAME'] not in matched_mazooka_artists
-                                        ][:100]  # Limit for very short names
-
-                # Find best match
-                for mazooka_row in potential_matches:
-                    mazooka_name = mazooka_row['CLEAN_ARTIST_NAME']
-                    score = comprehensive_match_score(adc_name, mazooka_name)
-
-                    if score > best_score:
-                        best_score = score
-                        best_match = mazooka_row
-
-                # If we found a good match
-                if best_match is not None and best_score >= match_threshold:
-                    matched_mazooka_artists.add(best_match['ARTIST_NAME'])
-
+                # Only add results for original ADC IDs (not expanded ones)
+                if adc_id in original_adc_ids:
                     results.append({
-                        'ADC_ARTIST_ID': adc_row.get('ADC_ARTIST_ID', None),
+                        'ADC_ARTIST_ID': adc_id,
                         'APRA_WORK_ID': adc_row.get('APRA_WORK_ID', None),
                         'APRA_ARTIST_ID': adc_row.get('APRA_ARTIST_ID', None),
                         'ADC_ARTIST_NAME': adc_original_name,
@@ -479,7 +351,80 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
                         'MATCH_SCORE': best_score,
                         'RECORDINGS_ID': best_match.get('RECORDINGS_ID', None),
                         'ISRC': best_match.get('ISRC', None),
-                        'ISWC': best_match.get('ISWC', None)
+                        'ISWC': iswc,
+                        'IS_VARIANT': adc_row.get('IS_VARIANT', 'ORIGINAL')
+                    })
+
+    # For ADC artists without ISWC matches, process them separately
+    adc_without_iswc = []
+    for _, row in adc_pandas.iterrows():
+        iswc = row.get('ISWC')
+        if not iswc or pd.isna(iswc) or iswc not in common_iswcs:
+            adc_without_iswc.append(row)
+
+    # Process artists without ISWC matches
+    if adc_without_iswc:
+        print(f"Processing {len(adc_without_iswc)} ADC artists without ISWC matches...")
+        batch_size = 500
+        for i in range(0, len(adc_without_iswc), batch_size):
+            batch = adc_without_iswc[i:i + batch_size]
+
+            for adc_row in batch:
+                adc_id = adc_row.get('ADC_ARTIST_ID')
+                adc_name = adc_row['CLEAN_NAME']
+                adc_original_name = adc_row['NAME']
+
+                best_match = None
+                best_score = 0
+
+                # Try exact matches first
+                for _, mz_row in mazooka_pandas.iterrows():
+                    mz_id = mz_row.get('RECORDINGS_ID')
+                    if (adc_id, mz_id) in matched_combinations:
+                        continue
+
+                    mz_name = mz_row['ARTIST_NAME']
+
+                    # Check for exact match
+                    if adc_original_name is not None and mz_name is not None and str(adc_original_name).upper() == str(
+                            mz_name).upper():
+                        best_match = mz_row
+                        best_score = 1.0
+                        break
+
+                # If no exact match, try approximate matching with a subset of candidates
+                if best_score < 1.0:
+                    # Limit potential matches to improve performance
+                    potential_matches = mazooka_pandas.iloc[:300].to_dict('records')  # Adjust size as needed
+
+                    for mz_row in potential_matches:
+                        mz_id = mz_row.get('RECORDINGS_ID')
+                        if (adc_id, mz_id) in matched_combinations:
+                            continue
+
+                        mz_clean_name = mz_row['CLEAN_ARTIST_NAME']
+                        score = match_with_delimiter_handling(adc_name, mz_clean_name)
+
+                        if score > best_score:
+                            best_score = score
+                            best_match = mz_row
+
+                # If we found a good match
+                if best_match is not None and best_score >= match_threshold:
+                    mz_id = best_match.get('RECORDINGS_ID')
+                    matched_combinations.add((adc_id, mz_id))
+
+                    results.append({
+                        'ADC_ARTIST_ID': adc_id,
+                        'APRA_WORK_ID': adc_row.get('APRA_WORK_ID', None),
+                        'APRA_ARTIST_ID': adc_row.get('APRA_ARTIST_ID', None),
+                        'ADC_ARTIST_NAME': adc_original_name,
+                        'MAZOOKA_ARTIST_NAME': best_match['ARTIST_NAME'].upper(),
+                        'MATCH_SCORE': best_score,
+                        'RECORDINGS_ID': best_match.get('RECORDINGS_ID', None),
+                        'ISRC': best_match.get('ISRC', None),
+                        'ISWC': best_match.get('ISWC', None),
+                        'IS_VARIANT': adc_row.get('IS_VARIANT', 'ORIGINAL')
                     })
 
             progress = min(100, round((i + len(batch)) / len(adc_without_iswc) * 100))
@@ -490,7 +435,7 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
         print("No matches found that meet the threshold criteria.")
         results_df_pandas = pd.DataFrame(columns=[
             'ADC_ARTIST_ID', 'APRA_WORK_ID', 'APRA_ARTIST_ID', 'ADC_ARTIST_NAME',
-            'MAZOOKA_ARTIST_NAME', 'MATCH_SCORE', 'RECORDINGS_ID', 'ISRC', 'ISWC'
+            'MAZOOKA_ARTIST_NAME', 'MATCH_SCORE', 'RECORDINGS_ID', 'ISRC', 'ISWC', 'IS_VARIANT'
         ])
     else:
         results_df_pandas = pd.DataFrame(results)
@@ -501,68 +446,44 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
     return results_df
 
 
-# Function to run with example data
 def run_with_examples(session):
-    print("Running with example data...")
-
-    # Create example DataFrames with actual ID columns to match your view definitions
     adc_examples = pd.DataFrame({
-        'ADC_ARTIST_ID': ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10', 'A11', 'A12', 'A13', 'A14',
-                          'A15'],
-        'APRA_WORK_ID': ['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8', 'W9', 'W10', 'W11', 'W12', 'W13', 'W14',
-                         'W15'],
-        'APRA_ARTIST_ID': ['PA1', 'PA2', 'PA3', 'PA4', 'PA5', 'PA6', 'PA7', 'PA8', 'PA9', 'PA10', 'PA11', 'PA12',
-                           'PA13', 'PA14', 'PA15'],
+        'ADC_ARTIST_ID': ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10'],
+        'APRA_WORK_ID': ['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8', 'W9', 'W10'],
+        'ISWC': ['ISWC1', 'ISWC2', 'ISWC3', 'ISWC4', 'ISWC5', 'ISWC6', 'ISWC7', 'ISWC8', 'ISWC9', 'ISWC10'],
+        'APRA_ARTIST_ID': ['PA1', 'PA2', 'PA3', 'PA4', 'PA5', 'PA6', 'PA7', 'PA8', 'PA9', 'PA10'],
         'NAME': [
-            'JESSICA MAUBOY',
-            'MUNGO JERRY',
+            'ROBBIE WILLIAMS / TAKE THAT',
+            'MUNGO JERRY | LANA DAVIS',
             'QUINCY JONES',
             'THE UPSETTERS',
             'COUNT BASIE / ROY ELDRIDGE',
             'COUNT BASEE',
-            'SONNY STITT',
+            'TAKE THAT',
             'GUNS N\'ROSES',
-            'BARBARO \'EL URBANO\' VARGAS',
-            'RIVER YARRA',
-            'KEELY SMITH',
-            'MILITARY BAND',
-            'MICHAL DWORZYNSKI',
-            'FREDDIE HUBBARD',
-            'COSHA'
-        ],
-        'TITLE': ['Song 1', 'Song 2', 'Song 3', 'Song 4', 'Song 5', 'Song 6', 'Song 7', 'Song 8', 'Song 9', 'Song 10',
-                  'Song 11', 'Song 12', 'Song 13', 'Song 14', 'Song 15'],
-        'ALBUM_NAME': ['Album 1', 'Album 2', 'Album 3', 'Album 4', 'Album 5', 'Album 6', 'Album 7', 'Album 8',
-                       'Album 9', 'Album 10', 'Album 11', 'Album 12', 'Album 13', 'Album 14', 'Album 15'],
-        'STATUS': ['Active', 'Active', 'Active', 'Active', 'Active', 'Active', 'Active', 'Active', 'Active', 'Active',
-                   'Active', 'Active', 'Active', 'Active', 'Active']
+            'THE HOLDING COMPANY|BIG BROTHER',
+            'WILLIAMS ROBBIE'
+        ]
     })
 
     mazooka_examples = pd.DataFrame({
-        'RECORDINGS_ID': ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12', 'R13', 'R14',
-                          'R15'],
-        'TRACK_ID': ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9', 'T10', 'T11', 'T12', 'T13', 'T14', 'T15'],
-        'ISRC': ['ISRC1', 'ISRC2', 'ISRC3', 'ISRC4', 'ISRC5', 'ISRC6', 'ISRC7', 'ISRC8', 'ISRC9', 'ISRC10', 'ISRC11',
-                 'ISRC12', 'ISRC13', 'ISRC14', 'ISRC15'],
-        'ISWC': ['ISWC1', 'ISWC2', 'ISWC3', 'ISWC4', 'ISWC5', 'ISWC6', 'ISWC7', 'ISWC8', 'ISWC9', 'ISWC10', 'ISWC11',
-                 'ISWC12', 'ISWC13', 'ISWC14', 'ISWC15'],
+        'RECORDINGS_ID': ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10'],
+        'ISRC': ['ISRC1', 'ISRC2', 'ISRC3', 'ISRC4', 'ISRC5', 'ISRC6', 'ISRC7', 'ISRC8', 'ISRC9', 'ISRC10'],
+        'ISWC': ['ISWC1', 'ISWC2', 'ISWC3', 'ISWC4', 'ISWC5', 'ISWC6', 'ISWC7', 'ISWC8', 'ISWC9', 'ISWC10'],
         'ARTIST_NAME': [
-            'JESSICA MAUBOY',
-            'MUNGO JERRY',
+            'ROBBIE WILLIAMS',
+            'BIG BROTHER & THE HOLDING COMPANY',
             'QUINCY JONES & THE BAND',
             'UPSETTERS',
-            'COUNT BASIE / ROY ELDRIDGE',
             'COUNT BASIE',
-            'SONSAX',
-            'GUNSHIP / Martin Grech',
-            'BARBARA LYNN',
-            'RIVRS',
-            'KEEP CALM...',
-            'MILES BONNY',
-            'MICHAEL ROSE',
-            'FREDDY FENDER',
-            'COSTUME'
-        ]})
+            'COUNT BASIE',
+            'SONNY STITT | WINNY MORGAN',
+            'GUNS N ROSES',
+            'JERRY MUNGO',
+            'ROY ELDRIDGE'
+        ]
+    })
+
     # Convert pandas to Snowpark dataframes
     adc_df = session.create_dataframe(adc_examples)
     mazooka_df = session.create_dataframe(mazooka_examples)
@@ -573,44 +494,58 @@ def run_with_examples(session):
     # Convert to pandas for analysis
     results_pandas = results_df.to_pandas()
 
-    # Get distinct combinations of ADC artist name, ADC work ID, Mazooka artist name, Match score, and ISWC
-    distinct_results = results_pandas.drop_duplicates(
-        subset=['ADC_ARTIST_NAME', 'APRA_WORK_ID', 'MAZOOKA_ARTIST_NAME', 'MATCH_SCORE', 'ISWC']
-    )
-
     # Calculate match quality statistics on distinct results
-    if not distinct_results.empty:
-        match_counts = distinct_results['MATCH_SCORE'].apply(lambda x: 'High (0.9-1.0)' if x >= 0.9 else
+    if not results_pandas.empty:
+        match_counts = results_pandas['MATCH_SCORE'].apply(lambda x: 'High (0.9-1.0)' if x >= 0.9 else
         ('Medium (0.7-0.9)' if x >= 0.7 else
          'Low (0.5-0.7)')).value_counts()
 
         print("\nMatching Results Summary:")
-        print(f"Total distinct matches: {len(distinct_results)}")
+        print(f"Total matches: {len(results_pandas)}")
         print(f"Match quality distribution:\n{match_counts}")
 
         # Display the distinct results
         result_columns = ['ADC_ARTIST_NAME', 'APRA_WORK_ID', 'MAZOOKA_ARTIST_NAME', 'MATCH_SCORE', 'ISWC']
-        result_summary = distinct_results[result_columns].sort_values(by='MATCH_SCORE', ascending=False)
-        print("\nSample of matching results (sorted by score):")
+        result_summary = results_pandas[result_columns].sort_values(by='MATCH_SCORE', ascending=False)
+        print("\nAll matching results (sorted by score):")
         print(result_summary)
 
-        # Save distinct results to table
+        # Ensure all required columns are present with correct types
+        expected_columns = {
+            'ADC_ARTIST_ID': 'VARCHAR(16777216)',
+            'APRA_WORK_ID': 'VARCHAR(16777216)',
+            'APRA_ARTIST_ID': 'VARCHAR(16777216)',
+            'ADC_ARTIST_NAME': 'VARCHAR(16777216)',
+            'MAZOOKA_ARTIST_NAME': 'VARCHAR(16777216)',
+            'MATCH_SCORE': 'FLOAT',
+            'RECORDINGS_ID': 'VARCHAR(16777216)',
+            'ISRC': 'VARCHAR(16777216)',
+            'ISWC': 'VARCHAR(16777216)',
+            'IS_VARIANT': 'VARCHAR(16777216)'
+        }
+
+        # Check if any columns are missing and add them with NULL values
+        for col in expected_columns:
+            if col not in results_pandas.columns:
+                results_pandas[col] = None
+
+        # Save distinct results to table with specified column types
         output_table = "EXAMPLE_ARTIST_MATCHING_RESULTS_DISTINCT"
-        distinct_results_df = session.create_dataframe(distinct_results)
-        distinct_results_df.write.mode("overwrite").save_as_table(output_table)
-        print(f"Distinct results saved to table {output_table}")
+        distinct_results_df = session.create_dataframe(results_pandas)
+
+        # Create or replace table with explicit column types
+        table_definition = ", ".join([f"{col} {dtype}" for col, dtype in expected_columns.items()])
+        session.sql(f"CREATE OR REPLACE TABLE {output_table} ({table_definition})").collect()
+
+        # Insert data into the table
+        distinct_results_df.write.mode("append").save_as_table(output_table)
+        print(f"Distinct results saved to table {output_table} with specified column types")
     else:
         print("No matches found that meet the threshold criteria.")
 
-    return distinct_results if not distinct_results.empty else None
 
-
-# Function to read from Snowflake tables
 def read_snowflake_tables(session, adc_table, mazooka_table):
-    print(f"Reading ADC artists from {adc_table}...")
     adc_df = session.table(adc_table)
-
-    print(f"Reading Mazooka artists from {mazooka_table}...")
     mazooka_df = session.table(mazooka_table)
 
     # Ensure required columns exist
@@ -632,17 +567,10 @@ def read_snowflake_tables(session, adc_table, mazooka_table):
 
 
 def main():
-    # Create Snowpark session
     session = Session.builder.getOrCreate()
 
-    # Choose the running mode
-    # exmpl data
     # mode = "example"
-
-    # sample subset
     mode = "subset"
-
-    # full dataset
     # mode = "full"
 
     if mode == "example":
@@ -650,24 +578,24 @@ def main():
         run_with_examples(session)
 
     elif mode == "subset":
+        sample_percentage = 20
         print("Running with SUBSET of Snowflake data")
-        adc_table = "EDW_APPS.MATCHING.ADC_ARTISTS_REMATCHED_ISWC_VW"  # Updated to use rematched views
-        mazooka_table = "EDW_APPS.MATCHING.MAZOOKA_RECORDINGS_REMATCHED_ISWC_VW"  # Updated to use rematched views
-        output_table = "EDW_APPS.MATCHING.ARTIST_MATCHING_RESULTS_SUBSET_DISTINCT"
-        sample_percentage = 2
+        adc_table = "EDW_APPS.MATCHING.ADC_ARTISTS_REMATCHED_ISWC_VW"
+        mazooka_table = "EDW_APPS.MATCHING.MAZOOKA_RECORDINGS_REMATCHED_ISWC_VW"
+        output_table = f"EDW_APPS.MATCHING.ARTIST_MATCHING_RESULTS_{sample_percentage}_PERC_SUBSET"
 
         # Read from Snowflake tables
         adc_df, mazooka_df = read_snowflake_tables(session, adc_table, mazooka_table)
 
         # Apply sampling
-        print(f"Testing on {sample_percentage}% of the data...")
+        print(f"Working with {sample_percentage}% of ADC data...")
         adc_count = adc_df.count()
         adc_sample_size = int(adc_count * sample_percentage / 100)
         adc_df = adc_df.sample(n=min(adc_sample_size, adc_count))
 
         print(f"Data size: {adc_df.count()} ADC artists and {mazooka_df.count()} Mazooka artists")
 
-        # Process matching with improved ISWC-based indexing method
+        # Process matching with improved method
         results_df = match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshold=0.6)
 
         # Convert to pandas for analysis
@@ -688,9 +616,34 @@ def main():
             print(f"Total distinct matches: {len(distinct_results)}")
             print(f"Match quality distribution:\n{match_counts}")
 
-            # Save distinct results to Snowflake table
+            # Ensure all required columns are present with correct types
+            expected_columns = {
+                'ADC_ARTIST_ID': 'VARCHAR(16777216)',
+                'APRA_WORK_ID': 'VARCHAR(16777216)',
+                'APRA_ARTIST_ID': 'VARCHAR(16777216)',
+                'ADC_ARTIST_NAME': 'VARCHAR(16777216)',
+                'MAZOOKA_ARTIST_NAME': 'VARCHAR(16777216)',
+                'MATCH_SCORE': 'FLOAT',
+                'RECORDINGS_ID': 'VARCHAR(16777216)',
+                'ISRC': 'VARCHAR(16777216)',
+                'ISWC': 'VARCHAR(16777216)',
+                'IS_VARIANT': 'VARCHAR(16777216)'
+            }
+
+            # Check if any columns are missing and add them with NULL values
+            for col in expected_columns:
+                if col not in distinct_results.columns:
+                    distinct_results[col] = None
+
+            # Save distinct results to table with specified column types
             distinct_results_df = session.create_dataframe(distinct_results)
-            distinct_results_df.write.mode("overwrite").save_as_table(output_table)
+
+            # Create or replace table with explicit column types
+            table_definition = ", ".join([f"{col} {dtype}" for col, dtype in expected_columns.items()])
+            session.sql(f"CREATE OR REPLACE TABLE {output_table} ({table_definition})").collect()
+
+            # Insert data into the table
+            distinct_results_df.write.mode("append").save_as_table(output_table)
             print(f"Distinct results saved to table {output_table}")
 
             # Display sample of distinct results
@@ -714,7 +667,7 @@ def main():
         print(f"Processing the entire dataset...")
         print(f"Data size: {adc_df.count()} ADC artists and {mazooka_df.count()} Mazooka artists")
 
-        # Process matching with improved ISWC-based indexing method
+        # Process matching with improved method
         results_df = match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshold=0.6)
 
         # Convert to pandas for analysis
@@ -735,10 +688,35 @@ def main():
             print(f"Total distinct matches: {len(distinct_results)}")
             print(f"Match quality distribution:\n{match_counts}")
 
-            # Save distinct results to Snowflake table
+            # Ensure all required columns are present with correct types
+            expected_columns = {
+                'ADC_ARTIST_ID': 'VARCHAR(16777216)',
+                'APRA_WORK_ID': 'VARCHAR(16777216)',
+                'APRA_ARTIST_ID': 'VARCHAR(16777216)',
+                'ADC_ARTIST_NAME': 'VARCHAR(16777216)',
+                'MAZOOKA_ARTIST_NAME': 'VARCHAR(16777216)',
+                'MATCH_SCORE': 'FLOAT',
+                'RECORDINGS_ID': 'VARCHAR(16777216)',
+                'ISRC': 'VARCHAR(16777216)',
+                'ISWC': 'VARCHAR(16777216)',
+                'IS_VARIANT': 'VARCHAR(16777216)'
+            }
+
+            # Check if any columns are missing and add them with NULL values
+            for col in expected_columns:
+                if col not in distinct_results.columns:
+                    distinct_results[col] = None
+
+            # Save distinct results to table with specified column types
             distinct_results_df = session.create_dataframe(distinct_results)
-            distinct_results_df.write.mode("overwrite").save_as_table(output_table)
-            print(f"Distinct results saved to table {output_table}")
+
+            # Create or replace table with explicit column types
+            table_definition = ", ".join([f"{col} {dtype}" for col, dtype in expected_columns.items()])
+            session.sql(f"CREATE OR REPLACE TABLE {output_table} ({table_definition})").collect()
+
+            # Insert data into the table
+            distinct_results_df.write.mode("append").save_as_table(output_table)
+            print(f"Distinct results saved to table {output_table} with specified column types")
 
             # Display sample of distinct results
             result_columns = ['ADC_ARTIST_NAME', 'APRA_WORK_ID', 'MAZOOKA_ARTIST_NAME', 'MATCH_SCORE', 'ISWC']
@@ -756,4 +734,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
