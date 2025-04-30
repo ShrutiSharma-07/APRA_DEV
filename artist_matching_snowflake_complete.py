@@ -3,27 +3,48 @@ import difflib
 import pandas as pd
 import numpy as np
 from snowflake.snowpark import Session
-from snowflake.snowpark.functions import col, lit, regexp_replace, upper, trim, when
 
 
 def clean_artist_name(name):
+    """
+    Cleans artist names by:
+    1. Replacing special characters with spaces
+    2. Removing articles (A, AN, THE) and 'BAND'
+    3. Removing all non-alphanumeric characters
+    4. Normalizing spaces
+    """
     if name is None or pd.isna(name):
         return ""
 
+    # Convert to uppercase for consistent processing
+    name = str(name).upper()
+
     # First, preserve spaces around special characters by replacing them with spaces
-    name_with_spaces = re.sub(r'[\'"`\-_&+]', ' ', str(name))
+    name_with_spaces = re.sub(r'[\'"`\-_&+\]\[]', ' ', name)
 
     # Then remove remaining non-alphanumeric characters (except spaces)
     cleaned = re.sub(r'[^a-zA-Z0-9 ]', '', name_with_spaces)
 
     # Normalize spaces (convert multiple spaces to single space)
-    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
     # If the result is just spaces, return the original name
-    if cleaned.strip() == "":
-        return str(name)
+    if cleaned == "":
+        return name
 
-    return cleaned.strip()
+    # Remove articles and 'BAND' - use word boundaries to ensure we're removing whole words
+    stop_words = [r'\bA\b', r'\bAN\b', r'\bTHE\b', r'\bBAND\b']
+    for word in stop_words:
+        cleaned = re.sub(word, ' ', cleaned)
+
+    # Normalize spaces again after removing words
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+    # If the result is empty after removing stop words, return the previous cleaned version
+    if cleaned == "":
+        return name_with_spaces.strip()
+
+    return cleaned
 
 
 def match_with_delimiter_handling(adc_name, mazooka_name):
@@ -38,17 +59,24 @@ def match_with_delimiter_handling(adc_name, mazooka_name):
     adc_upper = adc_original.upper()
     mazooka_upper = mazooka_original.upper()
 
-    # Define delimiters to check
-    delimiters = ['|', '/', '#', '\\', ',', ';']
+    # Define delimiters to check - UPDATED LIST WITH ALL REQUESTED DELIMITERS
+    delimiters = ['|', '/', '#', '\\', ',', ';', '\'', '"', '`', '-', '_', '&', '+', ']', '[']
+
+    # Define word delimiters (words that function as separators)
+    word_delimiters = [' A ', ' AN ', ' THE ', ' AND ', ' FT ', ' FT. ', ' FEAT ', ' BAND ']
 
     # ENHANCED APPROACH: Check for exact matching parts regardless of delimiter and order
     adc_has_delimiters = any(d in adc_upper for d in delimiters)
     mazooka_has_delimiters = any(d in mazooka_upper for d in delimiters)
 
+    # Check for word delimiters
+    adc_has_word_delimiters = any(wd in ' ' + adc_upper + ' ' for wd in word_delimiters)
+    mazooka_has_word_delimiters = any(wd in ' ' + mazooka_upper + ' ' for wd in word_delimiters)
+
     # Word-level exact matching regardless of order
     # First, clean special characters from both names
-    adc_spaced = re.sub(r'[\'"`\-_&+]+', ' ', adc_upper)
-    mazooka_spaced = re.sub(r'[\'"`\-_&+]+', ' ', mazooka_upper)
+    adc_spaced = re.sub(r'[\'"`\-_&+\]\[]', ' ', adc_upper)
+    mazooka_spaced = re.sub(r'[\'"`\-_&+\]\[]', ' ', mazooka_upper)
 
     # Remove remaining non-alphanumeric characters
     adc_clean = re.sub(r'[^a-zA-Z0-9 ]', '', adc_spaced).strip()
@@ -58,74 +86,122 @@ def match_with_delimiter_handling(adc_name, mazooka_name):
     adc_clean = re.sub(r'\s+', ' ', adc_clean)
     mazooka_clean = re.sub(r'\s+', ' ', mazooka_clean)
 
-    # Split into words and sort
-    adc_words = sorted([w for w in adc_clean.split() if w])
-    mazooka_words = sorted([w for w in mazooka_clean.split() if w])
+    # Remove stop words (A, AN, THE, BAND, etc.)
+    stop_words = ['A', 'AN', 'THE', 'BAND', 'AND', 'FT', 'FT.', 'FEAT']
+
+    # Split into words and sort, removing stop words
+    adc_words = sorted([w for w in adc_clean.split() if w and w not in stop_words])
+    mazooka_words = sorted([w for w in mazooka_clean.split() if w and w not in stop_words])
 
     # Check for exact word match (regardless of order)
     if adc_words == mazooka_words and len(adc_words) > 0:
         return 1.0  # Exact word match score
 
     # If either string has a delimiter, perform special handling
-    if adc_has_delimiters or mazooka_has_delimiters:
+    if adc_has_delimiters or mazooka_has_delimiters or adc_has_word_delimiters or mazooka_has_word_delimiters:
         # Normalize all delimiters to '|' for both strings
         adc_normalized = adc_upper
         mazooka_normalized = mazooka_upper
 
+        # Replace standard delimiters
         for d in delimiters:
             adc_normalized = adc_normalized.replace(d, '|')
             mazooka_normalized = mazooka_normalized.replace(d, '|')
+
+        # Replace word delimiters with pipe
+        for wd in word_delimiters:
+            adc_normalized = adc_normalized.replace(wd, '|')
+            mazooka_normalized = mazooka_normalized.replace(wd, '|')
 
         # Split by the normalized delimiter and strip each part
         adc_parts = [part.strip() for part in adc_normalized.split('|') if part.strip()]
         mazooka_parts = [part.strip() for part in mazooka_normalized.split('|') if part.strip()]
 
+        # Clean each part - remove stopwords
+        adc_parts_cleaned = []
+        mazooka_parts_cleaned = []
+
+        for part in adc_parts:
+            part_clean = clean_artist_name(part)
+            if part_clean:
+                adc_parts_cleaned.append(part_clean)
+
+        for part in mazooka_parts:
+            part_clean = clean_artist_name(part)
+            if part_clean:
+                mazooka_parts_cleaned.append(part_clean)
+
         # Sort the parts to ensure order doesn't matter
-        adc_parts_sorted = sorted(adc_parts)
-        mazooka_parts_sorted = sorted(mazooka_parts)
+        adc_parts_sorted = sorted(adc_parts_cleaned)
+        mazooka_parts_sorted = sorted(mazooka_parts_cleaned)
 
         # Check if the sorted parts are identical
-        if adc_parts_sorted == mazooka_parts_sorted:
+        if adc_parts_sorted == mazooka_parts_sorted and len(adc_parts_sorted) > 0:
             return 1.0  # Perfect match if sorted parts are identical
 
         # Check if either string is a subset of the other's parts
-        if all(part in mazooka_parts for part in adc_parts) or all(part in adc_parts for part in mazooka_parts):
+        if all(part in mazooka_parts_cleaned for part in adc_parts_cleaned) or all(
+                part in adc_parts_cleaned for part in mazooka_parts_cleaned):
             return 1.0  # Perfect match if one is a subset of the other
 
         # Check each part against the full other string or its parts
-        if adc_has_delimiters:
+        if adc_has_delimiters or adc_has_word_delimiters:
             for part in adc_parts:
+                # Clean the part
+                part_clean = clean_artist_name(part)
+                if not part_clean:
+                    continue
+
                 # Check against full mazooka name
-                if part == mazooka_upper:
+                mazooka_clean_name = clean_artist_name(mazooka_upper)
+                if part_clean == mazooka_clean_name:
                     return 1.0
 
                 # Check against any mazooka part if mazooka also has delimiters
-                if mazooka_has_delimiters and part in mazooka_parts:
-                    return 1.0
+                if (mazooka_has_delimiters or mazooka_has_word_delimiters):
+                    for mz_part in mazooka_parts:
+                        mz_part_clean = clean_artist_name(mz_part)
+                        if part_clean == mz_part_clean:
+                            return 1.0
 
-                # NEW: Check part against mazooka name words
+                # Check part against mazooka name words
                 part_words = sorted([w for w in re.sub(r'[^a-zA-Z0-9 ]', '',
-                                                       re.sub(r'[\'"`\-_&+]+', ' ', part)).split() if w])
+                                                       re.sub(r'[\'"`\-_&+\]\[]', ' ', part_clean)).split()
+                                     if w and w not in stop_words])
+
                 if part_words == mazooka_words:
                     return 1.0
 
-        if mazooka_has_delimiters:
+        if mazooka_has_delimiters or mazooka_has_word_delimiters:
             for part in mazooka_parts:
+                # Clean the part
+                part_clean = clean_artist_name(part)
+                if not part_clean:
+                    continue
+
                 # Check against full adc name
-                if part == adc_upper:
+                adc_clean_name = clean_artist_name(adc_upper)
+                if part_clean == adc_clean_name:
                     return 1.0
 
-                # NEW: Check part against adc name words
+                # Check part against adc name words
                 part_words = sorted([w for w in re.sub(r'[^a-zA-Z0-9 ]', '',
-                                                       re.sub(r'[\'"`\-_&+]+', ' ', part)).split() if w])
+                                                       re.sub(r'[\'"`\-_&+\]\[]', ' ', part_clean)).split()
+                                     if w and w not in stop_words])
                 if part_words == adc_words:
                     return 1.0
 
     # APPROACH 1: First try direct split and comparison before any cleaning
-    if any(d in adc_upper for d in delimiters):
+    if any(d in adc_upper for d in delimiters) or adc_has_word_delimiters:
         normalized_adc = adc_upper
+
+        # Replace standard delimiters
         for d in delimiters:
             normalized_adc = normalized_adc.replace(d, '|')
+
+        # Replace word delimiters
+        for wd in word_delimiters:
+            normalized_adc = normalized_adc.replace(wd, '|')
 
         # Split by the normalized delimiter and strip each part
         split_parts = [part.strip() for part in normalized_adc.split('|')]
@@ -133,19 +209,25 @@ def match_with_delimiter_handling(adc_name, mazooka_name):
 
         # Check each part directly against the Mazooka name
         for part in split_parts:
-            if part.strip() == mazooka_upper:
+            # Clean the part to remove stopwords
+            part_clean = clean_artist_name(part)
+            mazooka_clean = clean_artist_name(mazooka_upper)
+
+            if part_clean and part_clean == mazooka_clean:
                 return 1.0  # EXIT EARLY with perfect score if any split part matches exactly
 
-            # NEW: Check part words against mazooka words
-            part_clean = re.sub(r'[^a-zA-Z0-9 ]', '', re.sub(r'[\'"`\-_&+]+', ' ', part)).strip()
-            part_words = sorted([w for w in part_clean.split() if w])
+            # Check part words against mazooka words
+            part_words = sorted([w for w in re.sub(r'[^a-zA-Z0-9 ]', '',
+                                                   re.sub(r'[\'"`\-_&+\]\[]', ' ', part_clean)).split()
+                                 if w and w not in stop_words])
+
             if part_words == mazooka_words:
                 return 1.0
 
     # APPROACH 2: Standard processing
     # Replace common special characters with spaces first (preserves structure)
-    adc_spaced = re.sub(r'[\'"`\-_&+]', ' ', adc_upper)
-    mazooka_spaced = re.sub(r'[\'"`\-_&+]', ' ', mazooka_upper)
+    adc_spaced = re.sub(r'[\'"`\-_&+\]\[]', ' ', adc_upper)
+    mazooka_spaced = re.sub(r'[\'"`\-_&+\]\[]', ' ', mazooka_upper)
 
     # Then clean remaining non-alphanumeric characters
     adc_clean_spaced = re.sub(r'[^a-zA-Z0-9 ]', '', adc_spaced).strip()
@@ -163,32 +245,44 @@ def match_with_delimiter_handling(adc_name, mazooka_name):
     adc_clean_direct = re.sub(r'\s+', ' ', adc_clean_direct)
     mazooka_clean_direct = re.sub(r'\s+', ' ', mazooka_clean_direct)
 
+    # Remove stop words for direct comparison
+    for wd in stop_words:
+        pattern = r'\b' + wd + r'\b'
+        adc_clean_direct = re.sub(pattern, '', adc_clean_direct).strip()
+        mazooka_clean_direct = re.sub(pattern, '', mazooka_clean_direct).strip()
+
+        # Normalize spaces again
+        adc_clean_direct = re.sub(r'\s+', ' ', adc_clean_direct).strip()
+        mazooka_clean_direct = re.sub(r'\s+', ' ', mazooka_clean_direct).strip()
+
     # Check exact match using both cleaning approaches
     if adc_clean_direct == mazooka_clean_direct or adc_clean_spaced == mazooka_clean_spaced:
         return 1.0
 
     # IMPROVED: Check for name reversal - for both full names and individual words
-    adc_words = adc_clean_direct.split()
-    mazooka_words = mazooka_clean_direct.split()
+    adc_words = [w for w in adc_clean_direct.split() if w not in stop_words]
+    mazooka_words = [w for w in mazooka_clean_direct.split() if w not in stop_words]
 
-    # NEW: Sorted word comparison (order doesn't matter)
+    # Sorted word comparison (order doesn't matter)
     if sorted(adc_words) == sorted(mazooka_words) and len(adc_words) > 0:
         return 1.0  # Exact match if words are the same regardless of order
 
     # First check exact word reversal (e.g., "WILLIAMS ROBBIE" vs "ROBBIE WILLIAMS")
     if len(adc_words) > 1 and len(mazooka_words) > 1:
         adc_reversed = ' '.join(reversed(adc_words))
-        if adc_reversed == mazooka_clean_direct:
+        if adc_reversed == ' '.join(mazooka_words):
             return 0.95  # Almost perfect score for exact name reversal (kept for compatibility)
 
-    # Handle "THE" prefix removal for exact matching
-    adc_no_the = adc_clean_direct[4:] if adc_clean_direct.startswith("THE ") else adc_clean_direct
-    mazooka_no_the = mazooka_clean_direct[4:] if mazooka_clean_direct.startswith("THE ") else mazooka_clean_direct
+    # Handle stop word removal for exact matching
+    adc_no_stops = adc_clean_direct
+    mazooka_no_stops = mazooka_clean_direct
 
-    if adc_no_the == mazooka_no_the and len(adc_no_the) > 3:
-        return 1.0  # Perfect score for matches after "THE" removal
+    # Already removed stop words in previous step
 
-    # Check for first/last name reversed matches - keep this for compatibility
+    if adc_no_stops == mazooka_no_stops and len(adc_no_stops) > 3:
+        return 1.0
+
+        # Check for first/last name reversed matches - keep this for compatibility
     if len(adc_words) > 0 and len(mazooka_words) > 0:
         # Check if all words in both names match regardless of order
         if sorted(adc_words) == sorted(mazooka_words):
@@ -227,10 +321,16 @@ def match_with_delimiter_handling(adc_name, mazooka_name):
 
     # APPROACH 3: Advanced delimiter handling with clean data (ENHANCED)
     # Also try with cleaned versions of the parts
-    if any(d in adc_upper for d in delimiters):
+    if any(d in adc_upper for d in delimiters) or adc_has_word_delimiters:
         normalized_adc = adc_upper
+
+        # Replace standard delimiters
         for d in delimiters:
             normalized_adc = normalized_adc.replace(d, '|')
+
+        # Replace word delimiters
+        for wd in word_delimiters:
+            normalized_adc = normalized_adc.replace(wd, '|')
 
         # Split by the normalized delimiter and process each part
         split_parts = [part.strip() for part in normalized_adc.split('|')]
@@ -239,62 +339,91 @@ def match_with_delimiter_handling(adc_name, mazooka_name):
         # Clean each part for comparison
         for part in split_parts:
             # Clean the part just like we cleaned the full names
-            part_spaced = re.sub(r'[\'"`\-_&+]', ' ', part)
+            part_spaced = re.sub(r'[\'"`\-_&+\]\[]', ' ', part)
             part_clean = re.sub(r'[^a-zA-Z0-9 ]', '', part_spaced).strip()
             part_clean = re.sub(r'\s+', ' ', part_clean)
+
+            # Also remove stop words
+            for wd in stop_words:
+                pattern = r'\b' + wd + r'\b'
+                part_clean = re.sub(pattern, '', part_clean).strip()
+                part_clean = re.sub(r'\s+', ' ', part_clean).strip()
 
             # Try comparing cleaned part with cleaned Mazooka name
             if part_clean == mazooka_clean_direct:
                 return 1.0
 
-            # Also try with "THE" removed
-            part_no_the = part_clean[4:] if part_clean.startswith("THE ") else part_clean
-            if part_no_the == mazooka_no_the and len(part_no_the) > 3:
-                return 1.0
-
-            # NEW: Check part words against mazooka words
-            part_words = sorted([w for w in part_clean.split() if w])
-            if part_words == sorted(mazooka_clean_direct.split()):
+            # Check part words against mazooka words
+            part_words = sorted([w for w in part_clean.split()
+                                 if w and w not in stop_words])
+            if part_words == sorted([w for w in mazooka_clean_direct.split()
+                                     if w and w not in stop_words]):
                 return 1.0
 
     # APPROACH 4: Also try matching Mazooka name against each word-permutation of the split parts
-    if any(d in adc_upper for d in delimiters):
+    if any(d in adc_upper for d in delimiters) or adc_has_word_delimiters:
         normalized_adc = adc_upper
+
+        # Replace standard delimiters
         for d in delimiters:
             normalized_adc = normalized_adc.replace(d, '|')
+
+        # Replace word delimiters
+        for wd in word_delimiters:
+            normalized_adc = normalized_adc.replace(wd, '|')
 
         # Split and clean each part
         cleaned_parts = []
         for part in [p.strip() for p in normalized_adc.split('|') if p.strip()]:
-            part_spaced = re.sub(r'[\'"`\-_&+]', ' ', part)
+            part_spaced = re.sub(r'[\'"`\-_&+\]\[]', ' ', part)
             part_clean = re.sub(r'[^a-zA-Z0-9 ]', '', part_spaced).strip()
             part_clean = re.sub(r'\s+', ' ', part_clean)
+
+            # Remove stop words
+            for wd in stop_words:
+                pattern = r'\b' + wd + r'\b'
+                part_clean = re.sub(pattern, '', part_clean).strip()
+                part_clean = re.sub(r'\s+', ' ', part_clean).strip()
+
             if part_clean:
                 cleaned_parts.append(part_clean)
 
         # Try all permutations (for handling cases like "ROY ELDRIDGE / COUNT BASIE" vs "BASIE COUNT")
         for part in cleaned_parts:
-            part_words = part.split()
+            part_words = [w for w in part.split() if w not in stop_words]
             if len(part_words) > 1:  # Only try permutations if there are multiple words
                 # Try with words in reverse order
                 reversed_part = ' '.join(reversed(part_words))
                 if reversed_part == mazooka_clean_direct:
                     return 1.0
 
-                # NEW: Try with sorted words comparison
-                if sorted(part_words) == sorted(mazooka_clean_direct.split()):
+                # Try with sorted words comparison
+                if sorted(part_words) == sorted([w for w in mazooka_clean_direct.split()
+                                                 if w not in stop_words]):
                     return 1.0
 
     # APPROACH 5: Try with the cleaned COMBINED version
     # This combines all parts after cleaning into a single string
-    if any(d in adc_upper for d in delimiters):
+    if any(d in adc_upper for d in delimiters) or adc_has_word_delimiters:
         normalized_adc = adc_upper
+
+        # Replace standard delimiters with spaces
         for d in delimiters:
-            normalized_adc = normalized_adc.replace(d, ' ')  # Replace ALL delimiters with spaces
+            normalized_adc = normalized_adc.replace(d, ' ')
+
+        # Replace word delimiters with spaces
+        for wd in word_delimiters:
+            normalized_adc = normalized_adc.replace(wd, ' ')
 
         # Clean the combined string
         combined_clean = re.sub(r'[^a-zA-Z0-9 ]', '', normalized_adc).strip()
         combined_clean = re.sub(r'\s+', ' ', combined_clean)
+
+        # Remove stop words
+        for wd in stop_words:
+            pattern = r'\b' + wd + r'\b'
+            combined_clean = re.sub(pattern, '', combined_clean).strip()
+            combined_clean = re.sub(r'\s+', ' ', combined_clean).strip()
 
         # Check if Mazooka name is an exact match to any part of the combined string
         if mazooka_clean_direct in combined_clean.split():
@@ -306,9 +435,11 @@ def match_with_delimiter_handling(adc_name, mazooka_name):
             if len(mazooka_clean_direct) / len(combined_clean) > 0.7:
                 return 1.0
 
-        # NEW: Try matching with sorted word comparison
-        combined_words = sorted([w for w in combined_clean.split() if w])
-        mazooka_words = sorted([w for w in mazooka_clean_direct.split() if w])
+        # Try matching with sorted word comparison
+        combined_words = sorted([w for w in combined_clean.split()
+                                 if w and w not in stop_words])
+        mazooka_words = sorted([w for w in mazooka_clean_direct.split()
+                                if w and w not in stop_words])
         if combined_words == mazooka_words:
             return 1.0
 
@@ -329,14 +460,12 @@ def match_with_delimiter_handling(adc_name, mazooka_name):
     # For other cases, use sequence matching for basic similarity
     similarity_score = difflib.SequenceMatcher(None, adc_clean_spaced, mazooka_clean_spaced).ratio()
 
-    # Adjust to match examples like "QUINCY JONES" vs "QUINCY JONES & THE BAND"
     if similarity_score > 0.5:
         return round(similarity_score, 2)
     else:
         return 0
 
 
-# Function to expand delimited ADC names with tracking of which part matched
 def expand_adc_delimited_names(adc_pandas_df):
     """
     Expands rows with delimited artist names into multiple rows,
@@ -344,36 +473,43 @@ def expand_adc_delimited_names(adc_pandas_df):
     """
     expanded_rows = []
 
-    # Define delimiters
-    delimiters = ['|', '/', '#', '\\', ',', ';']
+    # Define ALL delimiters as requested
+    delimiters = ['|', '/', '#', '\\', ',', ';', '\'', '"', '`', '-', '_', '&', '+', ']', '[']
+    word_delimiters = [' A ', ' AN ', ' THE ', ' AND ', ' FT ', ' FT. ', ' FEAT ', ' BAND ']
 
     for _, row in adc_pandas_df.iterrows():
         artist_name = row['NAME']
 
         # First add the original name row
         new_row = row.copy()
-        new_row['IS_VARIANT'] = 'ORIGINAL'
-        new_row['VARIANT_PART'] = None  # Track which part matched (None for full original)
+        new_row['IS_VARIANT_ADC'] = 'ORIGINAL'
         expanded_rows.append(new_row)
 
         # Check if artist name contains delimiters
-        if any(d in str(artist_name) for d in delimiters):
-            # Normalize delimiters
-            artist_name_norm = str(artist_name)
+        has_char_delimiters = artist_name is not None and any(d in str(artist_name) for d in delimiters)
+        has_word_delimiters = artist_name is not None and any(
+            wd in ' ' + str(artist_name).upper() + ' ' for wd in word_delimiters)
+
+        if has_char_delimiters or has_word_delimiters:
+            # First handle character delimiters
+            artist_name_norm = str(artist_name).upper()
             for d in delimiters:
                 artist_name_norm = artist_name_norm.replace(d, '/')
+
+            # Then handle word delimiters by replacing them with slashes
+            for wd in word_delimiters:
+                artist_name_norm = artist_name_norm.replace(wd, '/')
 
             # Split and clean parts
             parts = [part.strip() for part in artist_name_norm.split('/')]
 
-            # For each part, create a new row with the part as NAME
+            # For each part, create a new row with the part as ARTIST_NAME
             for part in parts:
                 if part and part != artist_name:
                     new_row = row.copy()
-                    new_row['NAME'] = part
-                    new_row['CLEAN_NAME'] = clean_artist_name(part)
-                    new_row['IS_VARIANT'] = 'VARIANT'
-                    new_row['VARIANT_PART'] = part  # Track which part was used
+                    new_row['ARTIST_NAME'] = part
+                    new_row['CLEAN_ARTIST_NAME'] = clean_artist_name(part)
+                    new_row['IS_VARIANT_MZK'] = 'VARIANT'
                     expanded_rows.append(new_row)
 
     # Convert back to a DataFrame
@@ -381,7 +517,6 @@ def expand_adc_delimited_names(adc_pandas_df):
     return expanded_df
 
 
-# Main function to match artists with ISWC indexing - cleaned up version
 def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshold=0.6):
     print("Initiating artist name matching with ISWC indexing...")
 
@@ -399,6 +534,12 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
     expanded_adc = expand_adc_delimited_names(adc_pandas)
     print(f"Expanded ADC dataset from {len(adc_pandas)} to {len(expanded_adc)} rows after splitting delimited names")
 
+    # Create expanded Mazooka dataframe with split names
+    print("Expanding delimited Mazooka artist names...")
+    expanded_mazooka = expand_mazooka_delimited_names(mazooka_pandas)
+    print(
+        f"Expanded Mazooka dataset from {len(mazooka_pandas)} to {len(expanded_mazooka)} rows after splitting delimited names")
+
     # Group by ISWC to create indexes for faster matching
     print("Creating ISWC indexes...")
     adc_by_iswc = {}
@@ -415,8 +556,8 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
                 adc_by_iswc[iswc] = []
             adc_by_iswc[iswc].append(row)
 
-    # Create Mazooka index by ISWC
-    for _, row in mazooka_pandas.iterrows():
+    # Create Mazooka index by ISWC using expanded dataset
+    for _, row in expanded_mazooka.iterrows():
         iswc = row.get('ISWC')
         if iswc and not pd.isna(iswc):
             if iswc not in mazooka_by_iswc:
@@ -434,8 +575,8 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
     # Also track the best match for each ADC artist ID
     best_matches = {}  # {ADC_ARTIST_ID: (score, result_dict)}
 
-    # Define delimiters once, not in each loop
-    delimiters = ['|', '/', '#', '\\', ',', ';']
+    # Define delimiters once, not in each loop - UPDATED to include all requested delimiters
+    delimiters = ['|', '/', '#', '\\', ',', ';', '\'', '"', '`', '-', '_', '&', '+', ']', '[']
 
     # Process each common ISWC
     total_iswcs = len(common_iswcs)
@@ -450,8 +591,7 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
         for adc_row in adc_artists:
             adc_id = adc_row.get('ADC_ARTIST_ID')
             adc_original_name = adc_row['NAME']
-            is_variant = adc_row['IS_VARIANT']
-            variant_part = adc_row.get('VARIANT_PART')
+            is_variant = adc_row['IS_VARIANT_ADC']
 
             best_match = None
             best_score = 0
@@ -493,7 +633,9 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
                 mz_id = best_match.get('RECORDINGS_ID')
                 matched_combinations.add((adc_id, mz_id))
 
-                # IMPORTANT: Check if we should mark this as VARIANT
+                # Get variant status of the Mazooka match
+                is_variant_mzk = best_match.get('IS_VARIANT_MZK', 'ORIGINAL')
+
                 # When the original name contains delimiters and we match on a split part
                 final_is_variant = is_variant
 
@@ -525,17 +667,76 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
                                     final_is_variant = 'VARIANT'  # Mark as variant if matched on a part
                                     break
 
+                # First, get the original full Mazooka record before splitting
+                original_mazooka_rows = mazooka_pandas[
+                    mazooka_pandas['RECORDINGS_ID'] == best_match.get('RECORDINGS_ID')]
+                original_mzk_row = original_mazooka_rows.iloc[0] if not original_mazooka_rows.empty else None
+
+                # Default to whatever was determined in the expansion process
+                final_is_variant_mzk = is_variant_mzk
+
+                if original_mzk_row is not None:
+                    original_mzk_name = original_mzk_row['ARTIST_NAME']
+
+                    # Check if Mazooka name contains any delimiters
+                    mzk_has_delimiters = any(d in str(original_mzk_name) for d in delimiters)
+
+                    # Clean both names to compare the essential words
+                    adc_clean = clean_artist_name(str(adc_original_name))
+                    mzk_clean = clean_artist_name(str(original_mzk_name))
+
+                    # Split both names into words and filter out stopwords
+                    stopwords = ['A', 'AN', 'THE', 'AND', 'FT', 'FT.', 'FEAT', 'BAND']
+                    adc_words = [w for w in adc_clean.upper().split() if w and w not in stopwords]
+                    mzk_words = [w for w in mzk_clean.upper().split() if w and w not in stopwords]
+
+                    # Check if the ADC name is a strict subset of Mazooka name
+                    # AND the Mazooka name has additional significant words
+                    if (set(adc_words).issubset(set(mzk_words)) and len(adc_words) < len(mzk_words)):
+                        final_is_variant_mzk = 'VARIANT'
+
+                    # Also check if the ADC name is a substring of the Mazooka name
+                    # but not equal to it (catches cases like "QUINCY JONES" vs "QUINCY JONES & THE BAND")
+                    elif (adc_clean.upper() in mzk_clean.upper() and
+                          adc_clean.upper() != mzk_clean.upper() and
+                          len(adc_clean) / len(mzk_clean) < 0.95):  # Must be significantly shorter
+                        final_is_variant_mzk = 'VARIANT'
+
+                    # Check for the case where we matched on a variant part of the Mazooka name
+                    elif mzk_has_delimiters:
+                        # Normalize the Mazooka name for comparison
+                        normalized_mzk = str(original_mzk_name).upper()
+                        for d in delimiters:
+                            normalized_mzk = normalized_mzk.replace(d, '/')
+
+                        # Get all parts of the Mazooka name
+                        mzk_parts = [p.strip() for p in normalized_mzk.split('/')]
+
+                        # Check if the ADC name is similar to one of the parts (but not the whole)
+                        if str(adc_original_name).upper() != str(original_mzk_name).upper():
+                            for part in mzk_parts:
+                                if part and difflib.SequenceMatcher(None, part,
+                                                                    str(adc_original_name).upper()).ratio() > 0.8:
+                                    final_is_variant_mzk = 'VARIANT'
+                                    break
+
+                original_mazooka_rows = mazooka_pandas[
+                    mazooka_pandas['RECORDINGS_ID'] == best_match.get('RECORDINGS_ID')]
+                original_mzk_row = original_mazooka_rows.iloc[0] if not original_mazooka_rows.empty else None
+
                 result_dict = {
                     'ADC_ARTIST_ID': adc_id,
                     'APRA_WORK_ID': adc_row.get('APRA_WORK_ID', None),
                     'APRA_ARTIST_ID': adc_row.get('APRA_ARTIST_ID', None),
                     'ADC_ARTIST_NAME': original_row['NAME'] if original_row is not None else adc_original_name,
-                    'MAZOOKA_ARTIST_NAME': best_match['ARTIST_NAME'].upper(),
+                    'MAZOOKA_ARTIST_NAME': original_mzk_row['ARTIST_NAME'].upper() if original_mzk_row is not None else
+                    best_match['ARTIST_NAME'].upper(),
                     'MATCH_SCORE': best_score,
                     'RECORDINGS_ID': best_match.get('RECORDINGS_ID', None),
                     'ISRC': best_match.get('ISRC', None),
                     'ISWC': iswc,
-                    'IS_VARIANT': final_is_variant
+                    'IS_VARIANT_ADC': final_is_variant,
+                    'IS_VARIANT_MZK': final_is_variant_mzk
                 }
 
                 # If this is an original ADC entry, directly add it to results
@@ -548,7 +749,7 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
 
     # Add the best variant matches to results
     for adc_id, (score, result_dict) in best_matches.items():
-        if adc_id not in [r['ADC_ARTIST_ID'] for r in results if r['IS_VARIANT'] == 'ORIGINAL']:
+        if adc_id not in [r['ADC_ARTIST_ID'] for r in results if r['IS_VARIANT_ADC'] == 'ORIGINAL']:
             results.append(result_dict)
 
     # Process artists without ISWC matches
@@ -572,8 +773,9 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
                 best_match = None
                 best_score = 0
 
-                # Try exact matches first
-                for _, mz_row in mazooka_pandas.iterrows():
+                # Try exact matches first with the first 500 rows
+                sample_mazooka = expanded_mazooka.head(500)
+                for idx, mz_row in sample_mazooka.iterrows():
                     mz_id = mz_row.get('RECORDINGS_ID')
                     if (adc_id, mz_id) in matched_combinations:
                         continue
@@ -589,7 +791,7 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
 
                 # If no exact match, try special handling for delimited strings
                 if best_score < 1.0 and any(d in str(adc_original_name) for d in delimiters):
-                    for _, mz_row in mazooka_pandas.head(500).iterrows():  # Limit to first 500 for efficiency
+                    for idx, mz_row in sample_mazooka.iterrows():
                         mz_id = mz_row.get('RECORDINGS_ID')
                         if (adc_id, mz_id) in matched_combinations:
                             continue
@@ -603,10 +805,10 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
 
                 # If no match yet, try approximate matching with a subset of candidates
                 if best_score < 1.0:
-                    # Limit potential matches to improve performance
-                    potential_matches = mazooka_pandas.iloc[:300].to_dict('records')  # Adjust size as needed
+                    # Fixed: Don't use to_dict, iterate directly over DataFrame rows
+                    sample_mazooka = expanded_mazooka.head(300)
 
-                    for mz_row in potential_matches:
+                    for idx, mz_row in sample_mazooka.iterrows():
                         mz_id = mz_row.get('RECORDINGS_ID')
                         if (adc_id, mz_id) in matched_combinations:
                             continue
@@ -624,17 +826,81 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
                     mz_id = best_match.get('RECORDINGS_ID')
                     matched_combinations.add((adc_id, mz_id))
 
+                    # Get variant status for Mazooka record
+                    is_variant_mzk = best_match.get('IS_VARIANT_MZK', 'ORIGINAL')
+
+                    # IMPROVED MAZOOKA VARIANT DETECTION (same as above)
+                    # First, get the original full Mazooka record before splitting
+                    original_mazooka_rows = mazooka_pandas[
+                        mazooka_pandas['RECORDINGS_ID'] == best_match.get('RECORDINGS_ID')]
+                    original_mzk_row = original_mazooka_rows.iloc[0] if not original_mazooka_rows.empty else None
+
+                    # Default to whatever was determined in the expansion process
+                    final_is_variant_mzk = is_variant_mzk
+
+                    if original_mzk_row is not None:
+                        original_mzk_name = original_mzk_row['ARTIST_NAME']
+
+                        # Check if Mazooka name contains any delimiters
+                        mzk_has_delimiters = any(d in str(original_mzk_name) for d in delimiters)
+
+                        # Clean both names to compare the essential words
+                        adc_clean = clean_artist_name(str(adc_original_name))
+                        mzk_clean = clean_artist_name(str(original_mzk_name))
+
+                        # Split both names into words and filter out stopwords
+                        stopwords = ['A', 'AN', 'THE', 'AND', 'FT', 'FT.', 'FEAT', 'BAND']
+                        adc_words = [w for w in adc_clean.upper().split() if w and w not in stopwords]
+                        mzk_words = [w for w in mzk_clean.upper().split() if w and w not in stopwords]
+
+                        # CRITICAL FIX: Check if the ADC name is a strict subset of Mazooka name
+                        # AND the Mazooka name has additional significant words
+                        if (set(adc_words).issubset(set(mzk_words)) and len(adc_words) < len(mzk_words)):
+                            final_is_variant_mzk = 'VARIANT'
+
+                        # Also check if the ADC name is a substring of the Mazooka name
+                        # but not equal to it (catches cases like "QUINCY JONES" vs "QUINCY JONES & THE BAND")
+                        elif (adc_clean.upper() in mzk_clean.upper() and
+                              adc_clean.upper() != mzk_clean.upper() and
+                              len(adc_clean) / len(mzk_clean) < 0.95):  # Must be significantly shorter
+                            final_is_variant_mzk = 'VARIANT'
+
+                        # Check for the case where we matched on a variant part of the Mazooka name
+                        elif mzk_has_delimiters:
+                            # Normalize the Mazooka name for comparison
+                            normalized_mzk = str(original_mzk_name).upper()
+                            for d in delimiters:
+                                normalized_mzk = normalized_mzk.replace(d, '/')
+
+                            # Get all parts of the Mazooka name
+                            mzk_parts = [p.strip() for p in normalized_mzk.split('/')]
+
+                            # Check if the ADC name is similar to one of the parts (but not the whole)
+                            if str(adc_original_name).upper() != str(original_mzk_name).upper():
+                                for part in mzk_parts:
+                                    if part and difflib.SequenceMatcher(None, part,
+                                                                        str(adc_original_name).upper()).ratio() > 0.8:
+                                        final_is_variant_mzk = 'VARIANT'
+                                        break
+
+                    original_mazooka_rows = mazooka_pandas[
+                        mazooka_pandas['RECORDINGS_ID'] == best_match.get('RECORDINGS_ID')]
+                    original_mzk_row = original_mazooka_rows.iloc[0] if not original_mazooka_rows.empty else None
+
                     results.append({
                         'ADC_ARTIST_ID': adc_id,
                         'APRA_WORK_ID': adc_row.get('APRA_WORK_ID', None),
                         'APRA_ARTIST_ID': adc_row.get('APRA_ARTIST_ID', None),
                         'ADC_ARTIST_NAME': adc_original_name,
-                        'MAZOOKA_ARTIST_NAME': best_match['ARTIST_NAME'].upper(),
+                        'MAZOOKA_ARTIST_NAME': original_mzk_row[
+                            'ARTIST_NAME'].upper() if original_mzk_row is not None else best_match[
+                            'ARTIST_NAME'].upper(),
                         'MATCH_SCORE': best_score,
                         'RECORDINGS_ID': best_match.get('RECORDINGS_ID', None),
                         'ISRC': best_match.get('ISRC', None),
                         'ISWC': best_match.get('ISWC', None),
-                        'IS_VARIANT': 'ORIGINAL'
+                        'IS_VARIANT_ADC': 'ORIGINAL',
+                        'IS_VARIANT_MZK': final_is_variant_mzk
                     })
 
             progress = min(100, round((i + len(batch)) / len(adc_without_iswc) * 100))
@@ -646,7 +912,7 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
         results_df_pandas = pd.DataFrame(columns=[
             'ADC_ARTIST_ID', 'APRA_WORK_ID', 'APRA_ARTIST_ID', 'ADC_ARTIST_NAME',
             'MAZOOKA_ARTIST_NAME', 'MATCH_SCORE', 'RECORDINGS_ID', 'ISRC', 'ISWC',
-            'IS_VARIANT'
+            'IS_VARIANT_ADC', 'IS_VARIANT_MZK'
         ])
     else:
         results_df_pandas = pd.DataFrame(results)
@@ -657,17 +923,63 @@ def match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshol
     return results_df
 
 
+def expand_mazooka_delimited_names(mazooka_pandas_df):
+    expanded_rows = []
+
+    # Define delimiters
+    delimiters = ['|', '/', '#', '\\', ',', ';', '\'', '"', '`', '-', '_', '&', '+', ']', '[']
+    word_delimiters = [' A ', ' AN ', ' THE ', ' AND ', ' FT ', ' FT. ', ' FEAT ', ' BAND ']
+
+    for _, row in mazooka_pandas_df.iterrows():
+        artist_name = row['ARTIST_NAME']
+
+        # First add the original name row
+        new_row = row.copy()
+        new_row['IS_VARIANT_MZK'] = 'ORIGINAL'
+        expanded_rows.append(new_row)
+
+        # Check if artist name contains delimiters
+        has_char_delimiters = artist_name is not None and any(d in str(artist_name) for d in delimiters)
+        has_word_delimiters = artist_name is not None and any(
+            wd in ' ' + str(artist_name).upper() + ' ' for wd in word_delimiters)
+
+        if has_char_delimiters or has_word_delimiters:
+            # First handle character delimiters
+            artist_name_norm = str(artist_name).upper()
+            for d in delimiters:
+                artist_name_norm = artist_name_norm.replace(d, '/')
+
+            # Then handle word delimiters by replacing them with slashes
+            for wd in word_delimiters:
+                artist_name_norm = artist_name_norm.replace(wd, '/')
+
+            # Split and clean parts
+            parts = [part.strip() for part in artist_name_norm.split('/')]
+
+            # For each part, create a new row with the part as ARTIST_NAME
+            for part in parts:
+                if part and part != artist_name:
+                    new_row = row.copy()
+                    new_row['ARTIST_NAME'] = part
+                    new_row['CLEAN_ARTIST_NAME'] = clean_artist_name(part)
+                    new_row['IS_VARIANT_MZK'] = 'VARIANT'
+                    expanded_rows.append(new_row)
+
+    # Convert back to a DataFrame
+    expanded_df = pd.DataFrame(expanded_rows)
+    return expanded_df
+
+
 def run_with_examples(session):
     print("Creating example data for testing...")
 
-    # Create more intentional examples with better matched test cases
     adc_examples = pd.DataFrame({
         'ADC_ARTIST_ID': ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10'],
         'APRA_WORK_ID': ['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8', 'W9', 'W10'],
         'ISWC': ['ISWC1', 'ISWC2', 'ISWC3', 'ISWC4', 'ISWC5', 'ISWC6', 'ISWC7', 'ISWC8', 'ISWC9', 'ISWC10'],
         'APRA_ARTIST_ID': ['PA1', 'PA2', 'PA3', 'PA4', 'PA5', 'PA6', 'PA7', 'PA8', 'PA9', 'PA10'],
         'NAME': [
-            'ROBBIE WILLIAMS / TAKE THAT',
+            'ROBBIE WILLIAMS',
             'JAMES TAYLOR|ALISON KRAUSS',
             'QUINCY JONES',
             'THE UPSETTERS',
@@ -676,7 +988,7 @@ def run_with_examples(session):
             'TAKE THAT',
             'GUNS N\'ROSES',
             'MUNGO JERRY',
-            'WILLIAMS ROBIIE'
+            'WILLIAMS AND ROBBIE BAND'
         ]
     })
 
@@ -685,27 +997,18 @@ def run_with_examples(session):
         'ISRC': ['ISRC1', 'ISRC2', 'ISRC3', 'ISRC4', 'ISRC5', 'ISRC6', 'ISRC7', 'ISRC8', 'ISRC9', 'ISRC10'],
         'ISWC': ['ISWC1', 'ISWC2', 'ISWC3', 'ISWC4', 'ISWC5', 'ISWC6', 'ISWC7', 'ISWC8', 'ISWC9', 'ISWC10'],
         'ARTIST_NAME': [
-            'ROBBIE WILLIAMS',
+            'ROBBIE AND WILLIAMS',
             'ALISON KRAUSS / JAMES TAYLOR',
             'QUINCY JONES & THE BAND',
             'UPSETTERS',
-            'ROY ELDRIDGE',
+            'COUNT BASIE / ROY ELDRIDGE',
             'COUNT BASIE',
-            'TAKE THAT',
+            'TAKE THAT FEAT JONAS',
             'GUNS N ROSES',
             'JERRY MUNGO',
-            'ROBBIE WILLIAMS'
+            'ROBBIE & WILLIAMS'
         ]
     })
-
-    # Debug print the test data
-    print("\nADC test data:")
-    for i, row in adc_examples.iterrows():
-        print(f"{row['ADC_ARTIST_ID']}: {row['NAME']} (ISWC: {row['ISWC']})")
-
-    print("\nMazooka test data:")
-    for i, row in mazooka_examples.iterrows():
-        print(f"{row['RECORDINGS_ID']}: {row['ARTIST_NAME']} (ISWC: {row['ISWC']})")
 
     # Convert pandas to Snowpark dataframes
     adc_df = session.create_dataframe(adc_examples)
@@ -713,20 +1016,10 @@ def run_with_examples(session):
 
     print("\nRunning matching algorithm on test data...")
 
-    # Run matching on example data with appropriate threshold
-    # Use a lower threshold to ensure we capture more matches for demonstration purposes
     results_df = match_artists_with_iswc_indexing(session, adc_df, mazooka_df, match_threshold=0.5)
 
     # Convert to pandas for analysis and debugging
     results_pandas = results_df.to_pandas()
-
-    print(f"\nRaw results count: {len(results_pandas)}")
-
-    # For debugging: Print ALL raw results before deduplication
-    print("\nRaw matching results:")
-    for i, row in results_pandas.iterrows():
-        print(
-            f"ADC: {row['ADC_ARTIST_NAME']} → Mazooka: {row['MAZOOKA_ARTIST_NAME']} (Score: {row['MATCH_SCORE']:.2f}, Variant: {row['IS_VARIANT']})")
 
     # Get distinct combinations of ADC artist name, ADC work ID, Mazooka artist name, Match score, and ISWC
     if not results_pandas.empty:
@@ -754,7 +1047,8 @@ def run_with_examples(session):
             'RECORDINGS_ID': 'VARCHAR(16777216)',
             'ISRC': 'VARCHAR(16777216)',
             'ISWC': 'VARCHAR(16777216)',
-            'IS_VARIANT': 'VARCHAR(16777216)'
+            'IS_VARIANT_ADC': 'VARCHAR(16777216)',
+            'IS_VARIANT_MZK': 'VARCHAR(16777216)'
         }
 
         # Check if any columns are missing and add them with NULL values
@@ -775,43 +1069,13 @@ def run_with_examples(session):
         print(f"\nDistinct results saved to table {output_table}")
 
         # Display all distinct results for the example data (small enough dataset)
-        result_columns = ['ADC_ARTIST_NAME', 'APRA_WORK_ID', 'MAZOOKA_ARTIST_NAME', 'MATCH_SCORE', 'ISWC', 'IS_VARIANT']
+        result_columns = ['ADC_ARTIST_NAME', 'APRA_WORK_ID', 'MAZOOKA_ARTIST_NAME', 'MATCH_SCORE', 'ISWC',
+                          'IS_VARIANT_ADC', 'IS_VARIANT_MZK']
         result_summary = distinct_results[result_columns].sort_values(by=['MATCH_SCORE', 'ADC_ARTIST_NAME'],
                                                                       ascending=[False, True])
         print("\nAll distinct matching results (sorted by score):")
         print(result_summary)
 
-        # Print specific information about variant matches
-        variants = distinct_results[distinct_results['IS_VARIANT'] == 'VARIANT']
-        if not variants.empty:
-            print("\nVariant matches (from expanded/split artists):")
-            print(variants[result_columns])
-        else:
-            print("\nNo variant matches found. The delimiter expansion may not be working correctly.")
-
-        # Check for expected matches that are missing
-        expected_matches = [
-            ("JAMES TAYLOR|ALISON KRAUSS", "ALISON KRAUSS / JAMES TAYLOR"),
-            ("MUNGO JERRY", "JERRY MUNGO"),
-            ("WILLIAMS ROBBIE", "ROBBIE WILLIAMS"),
-            ("COUNT BASIE / ROY ELDRIDGE", "ROY ELDRIDGE")
-        ]
-
-        print("\nChecking for expected key matches:")
-        for adc_name, mazooka_name in expected_matches:
-            match = distinct_results[(distinct_results['ADC_ARTIST_NAME'] == adc_name) &
-                                     (distinct_results['MAZOOKA_ARTIST_NAME'] == mazooka_name)]
-            if len(match) > 0:
-                print(f"✅ Found match: {adc_name} → {mazooka_name} (Score: {match['MATCH_SCORE'].values[0]:.2f})")
-            else:
-                variant_match = distinct_results[
-                    (distinct_results['ADC_ARTIST_NAME'].str.contains(adc_name, regex=False)) &
-                    (distinct_results['MAZOOKA_ARTIST_NAME'] == mazooka_name)]
-                if len(variant_match) > 0:
-                    print(
-                        f"⚠️ Found variant match: {variant_match['ADC_ARTIST_NAME'].values[0]} → {mazooka_name} (Score: {variant_match['MATCH_SCORE'].values[0]:.2f})")
-                else:
-                    print(f"❌ Missing expected match: {adc_name} → {mazooka_name}")
 
     else:
         print("No matches found that meet the threshold criteria.")
@@ -854,7 +1118,7 @@ def main():
         run_with_examples(session)
 
     elif mode == "subset":
-        sample_percentage = 10
+        sample_percentage = 1
         print("Running with SUBSET of Snowflake data")
         adc_table = "EDW_APPS.MATCHING.ADC_ARTISTS_REMATCHED_ISWC_VW"
         mazooka_table = "EDW_APPS.MATCHING.MAZOOKA_RECORDINGS_REMATCHED_ISWC_VW"
@@ -903,7 +1167,8 @@ def main():
                 'RECORDINGS_ID': 'VARCHAR(16777216)',
                 'ISRC': 'VARCHAR(16777216)',
                 'ISWC': 'VARCHAR(16777216)',
-                'IS_VARIANT': 'VARCHAR(16777216)'
+                'IS_VARIANT_ADC': 'VARCHAR(16777216)',
+                'IS_VARIANT_MZK': 'VARCHAR(16777216)'
             }
 
             # Check if any columns are missing and add them with NULL values
@@ -975,7 +1240,8 @@ def main():
                 'RECORDINGS_ID': 'VARCHAR(16777216)',
                 'ISRC': 'VARCHAR(16777216)',
                 'ISWC': 'VARCHAR(16777216)',
-                'IS_VARIANT': 'VARCHAR(16777216)'
+                'IS_VARIANT_ADC': 'VARCHAR(16777216)',
+                'IS_VARIANT_MZK': 'VARCHAR(16777216)'
             }
 
             # Check if any columns are missing and add them with NULL values
@@ -1010,3 +1276,23 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#  Matching Rules Order
+# 1. Exact Match with Delimiter:
+#
+# If adc_name == mazooka_name exactly as-is, it's an exact match.
+#
+# Example: JAMES TAYLOR|ALISON KRAUSS vs JAMES TAYLOR|ALISON KRAUSS → ✅ Exact Match
+#
+# 2. Exact Match Ignoring Delimiter and Order:
+#
+# If the set of names (split by any delimiter like |, /, etc.) is the same in both strings, it's also an exact match, even if delimiters differ (| vs /) and the order of names is different
+#
+# Examples:
+# JAMES TAYLOR|ALISON KRAUSS vs ALISON KRAUSS/JAMES TAYLOR → ✅ Exact Match
+#
+# A/B vs B|A → ✅ Exact Match
+#
+# Logical Approach
+# Normalize both strings by splitting on delimiters, trimming whitespace, sorting the names, and comparing the resulting sets/lists.
+#
