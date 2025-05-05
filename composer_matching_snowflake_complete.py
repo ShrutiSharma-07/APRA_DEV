@@ -1,38 +1,102 @@
-# Import Snowpark and other needed packages
-import snowflake.snowpark as snowpark
-from snowflake.snowpark.functions import col, lit, upper, trim, length, when, split, explode, row_number
-from snowflake.snowpark.window import Window
-from snowflake.snowpark.functions import col, lit
-from snowflake.snowpark.functions import udf
-from snowflake.snowpark.types import FloatType, StringType
-
+from snowflake.snowpark.functions import col, lit, upper, trim, length, when, regexp_replace
+from snowflake.snowpark.functions import split, explode, trim
 import datetime
 import logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(f"composer_matching_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
-        logging.StreamHandler()
+
+def create_example_dataset(session):
+    """Create a small example dataset for testing"""
+    print("Creating example dataset for testing...")
+
+    adc_composers_data = [
+        {"ADC_COMPOSER_ID": 43774657, "APRA_WORK_ID": "GW01421940", "IPI": "323735",
+         "NAME": "HAY ROY ERNEST THE GREATEST AND GEMINI ROCK MAC SUN", "ISWC": "T0700428041"},
+        {"ADC_COMPOSER_ID": 43774658, "APRA_WORK_ID": "GW01421941", "IPI": "523736", "NAME": "SMITH JOHN",
+         "ISWC": "T0700428042"},
+        {"ADC_COMPOSER_ID": 43774659, "APRA_WORK_ID": "GW01421942", "IPI": "723737", "NAME": "WILSON BRIAN",
+         "ISWC": "T0700428043"},
+        {"ADC_COMPOSER_ID": 43774660, "APRA_WORK_ID": "GW01421943", "IPI": "823738", "NAME": "TAYLOR D",
+         "ISWC": "T0700428044"},
+        {"ADC_COMPOSER_ID": 43774661, "APRA_WORK_ID": "GW01421944", "IPI": "923739", "NAME": "J WAGNER",
+         "ISWC": "T0700428045"},
+        {"ADC_COMPOSER_ID": 43774662, "APRA_WORK_ID": "GW01421945", "IPI": "123740", "NAME": "BEETHOVEN LUDWIG VAN",
+         "ISWC": "T0700428046"},
+        {"ADC_COMPOSER_ID": 43774663, "APRA_WORK_ID": "GW01421946", "IPI": "223741", "NAME": "ARMSTRONG LOUIS DANIEL",
+         "ISWC": "T0700428047"},
+        {"ADC_COMPOSER_ID": 43774664, "APRA_WORK_ID": "GW01421947", "IPI": "323742", "NAME": "LENNON JOHN WINSTON",
+         "ISWC": "T0700428048"},
+        {"ADC_COMPOSER_ID": 44100861, "APRA_WORK_ID": "GW02005365", "IPI": "445678", "NAME": "MARTIN HUGH",
+         "ISWC": "T0700726620"}
     ]
-)
-logger = logging.getLogger(__name__)
+
+    mazooka_composers_data = [
+        {"COMPOSER_ID": "mz-comp-1", "TRACK_ID": "mz-fdbe5c86458643076e5514de8111d3c1",
+         "COMPOSER": "ROY ERNEST HAY THE GREATEST ROCK GEMINI SUN MAC", "IPI": "323735", "STATUS": "Active",
+         "ISWC": "T0700428041"},
+        {"COMPOSER_ID": "mz-comp-2", "TRACK_ID": "mz-fdbe5c86458643076e5514de8111d3c2", "COMPOSER": "JOHN SMITH",
+         "IPI": "523736", "STATUS": "Active", "ISWC": "T0700428042"},
+        {"COMPOSER_ID": "mz-comp-3", "TRACK_ID": "mz-fdbe5c86458643076e5514de8111d3c3", "COMPOSER": "BRIAN WILSON",
+         "IPI": "723737", "STATUS": "Active", "ISWC": "T0700428043"},
+        {"COMPOSER_ID": "mz-comp-4", "TRACK_ID": "mz-fdbe5c86458643076e5514de8111d3c4", "COMPOSER": "DAVID TAYLOR",
+         "IPI": "823738", "STATUS": "Active", "ISWC": "T0700428044"},
+        {"COMPOSER_ID": "mz-comp-5", "TRACK_ID": "mz-fdbe5c86458643076e5514de8111d3c5", "COMPOSER": "JACK WAGNER",
+         "IPI": "923739", "STATUS": "Active", "ISWC": "T0700428045"},
+        {"COMPOSER_ID": "mz-comp-6", "TRACK_ID": "mz-fdbe5c86458643076e5514de8111d3c6",
+         "COMPOSER": "LUDWIG VAN BEETHOVEN", "IPI": "123740", "STATUS": "Active", "ISWC": "T0700428046"},
+        {"COMPOSER_ID": "mz-comp-7", "TRACK_ID": "mz-fdbe5c86458643076e5514de8111d3c7",
+         "COMPOSER": "LOUIS D. ARMSTRONG", "IPI": "223741", "STATUS": "Active", "ISWC": "T0700428047"},
+        {"COMPOSER_ID": "mz-comp-8", "TRACK_ID": "mz-fdbe5c86458643076e5514de8111d3c8", "COMPOSER": "JOHN LENNON",
+         "IPI": "323742", "STATUS": "Active", "ISWC": "T0700428048"},
+        {"COMPOSER_ID": "mz-comp-9", "TRACK_ID": "mz-2bfcf0aa02a2eb187fb02952d46203c8", "COMPOSER": "HUGH MARTIN",
+         "IPI": "445678", "STATUS": "Active", "ISWC": "T0700726620"}
+    ]
+
+    adc_works_data = [
+        {"APRA_WORK_ID": "GW01421940", "TITLE": "EXAMPLE WORK 1",
+         "COMPOSER_NAMES": "HAY ROY ERNEST THE GREATEST AND GEMINI ROCK MAC SUN", "ISWC": "T0700428041", "CD_TYPE": "1",
+         "YN_PERF_OWNERSHIP": "N", "YN_PROCESSED": "Y", "YN_PASS": "Y"},
+        {"APRA_WORK_ID": "GW01421941", "TITLE": "EXAMPLE WORK 2", "COMPOSER_NAMES": "SMITH JOHN", "ISWC": "T0700428042",
+         "CD_TYPE": "1", "YN_PERF_OWNERSHIP": "N", "YN_PROCESSED": "Y", "YN_PASS": "Y"},
+        {"APRA_WORK_ID": "GW01421942", "TITLE": "EXAMPLE WORK 3", "COMPOSER_NAMES": "WILSON BRIAN",
+         "ISWC": "T0700428043", "CD_TYPE": "1", "YN_PERF_OWNERSHIP": "N", "YN_PROCESSED": "Y", "YN_PASS": "Y"},
+        {"APRA_WORK_ID": "GW01421943", "TITLE": "EXAMPLE WORK 4", "COMPOSER_NAMES": "TAYLOR D", "ISWC": "T0700428044",
+         "CD_TYPE": "1", "YN_PERF_OWNERSHIP": "N", "YN_PROCESSED": "Y", "YN_PASS": "Y"},
+        {"APRA_WORK_ID": "GW01421944", "TITLE": "EXAMPLE WORK 5", "COMPOSER_NAMES": "J WAGNER", "ISWC": "T0700428045",
+         "CD_TYPE": "1", "YN_PERF_OWNERSHIP": "N", "YN_PROCESSED": "Y", "YN_PASS": "Y"},
+        {"APRA_WORK_ID": "GW01421945", "TITLE": "EXAMPLE WORK 6", "COMPOSER_NAMES": "VAN BEETHOVEN L",
+         "ISWC": "T0700428046", "CD_TYPE": "1", "YN_PERF_OWNERSHIP": "N", "YN_PROCESSED": "Y", "YN_PASS": "Y"},
+        {"APRA_WORK_ID": "GW01421946", "TITLE": "EXAMPLE WORK 7", "COMPOSER_NAMES": "ARMSTRONG LOUIS DANIEL",
+         "ISWC": "T0700428047", "CD_TYPE": "1", "YN_PERF_OWNERSHIP": "N", "YN_PROCESSED": "Y", "YN_PASS": "Y"},
+        {"APRA_WORK_ID": "GW01421947", "TITLE": "EXAMPLE WORK 8", "COMPOSER_NAMES": "LENNON JOHN WINSTON",
+         "ISWC": "T0700428048", "CD_TYPE": "1", "YN_PERF_OWNERSHIP": "N", "YN_PROCESSED": "Y", "YN_PASS": "Y"},
+        {"APRA_WORK_ID": "GW02005365", "TITLE": "EXAMPLE WORK 9", "COMPOSER_NAMES": "MARTIN HUGH",
+         "ISWC": "T0700726620", "CD_TYPE": "1", "YN_PERF_OWNERSHIP": "N", "YN_PROCESSED": "Y", "YN_PASS": "Y"}
+    ]
+
+    adc_composers_df = session.create_dataframe(adc_composers_data)
+    mazooka_composers_df = session.create_dataframe(mazooka_composers_data)
+    adc_works_df = session.create_dataframe(adc_works_data)
+
+    # Return the DataFrames without persisting to tables
+    return {
+        "adc_composers": adc_composers_df,
+        "mazooka_composers": mazooka_composers_df,
+        "adc_works": adc_works_df
+    }
 
 
 def clean_text(text_col):
-    """Apply basic cleaning rules: uppercase and remove leading/trailing whitespace"""
-    return upper(trim(text_col))
+    # Remove bracket content and clean text
+    cleaned_text = regexp_replace(text_col, r'\([^\)]*\)', '')
+    return upper(trim(cleaned_text))
 
 
 def split_composer_names(session, df, composer_col):
-    """Split composers where multiple exist using Snowpark DataFrame operations"""
-    logger.info(f"Splitting composer names in column {composer_col}")
+    print(f"Splitting composer names in column {composer_col}")
 
     try:
-        # First, use the explode function with the split operation for slash delimiter
-        from snowflake.snowpark.functions import split, explode, trim
+        # First, clean the text to remove bracket content
+        df = df.withColumn(composer_col, clean_text(col(composer_col)))
 
         # Handle the first delimiter ('/')
         df_slash_split = df.withColumn("composer_array", split(col(composer_col), lit("/")))
@@ -54,30 +118,34 @@ def split_composer_names(session, df, composer_col):
         return result_df
 
     except Exception as e:
-        logger.error(f"Error in split_composer_names: {str(e)}")
-        # Try a fallback approach if the first method fails
-        logger.info("Trying fallback approach for name splitting")
+        print(f"Error in split_composer_names: {str(e)}")
+
+        print("Trying fallback approach for name splitting")
         return fallback_split_composer_names(session, df, composer_col)
 
 
 def fallback_split_composer_names(session, df, composer_col):
-    """Fallback method for splitting composer names using SQL"""
     # Create a SQL statement that doesn't rely on temporary tables
     cols = ", ".join([c for c in df.columns if c != composer_col])
 
-    # Convert the DataFrame to SQL
     df_sql = df._to_sql()
 
-    # Create a SQL query for splitting without creating tables
+    # First remove bracket content
     sql = f"""
-    WITH src AS ({df_sql}),
+    WITH cleaned AS (
+        SELECT 
+            {cols},
+            TRIM(REGEXP_REPLACE({composer_col}, '\\\\([^\\\\)]*\\\\)', '')) AS cleaned_{composer_col}
+        FROM 
+            ({df_sql}) src
+    ),
     slash_split AS (
         SELECT 
             {cols},
             TRIM(s.value) AS slash_value
         FROM 
-            src t,
-            TABLE(SPLIT_TO_TABLE(t.{composer_col}, '/')) s
+            cleaned t,
+            TABLE(SPLIT_TO_TABLE(t.cleaned_{composer_col}, '/')) s
     ),
     semicolon_split AS (
         SELECT 
@@ -100,26 +168,29 @@ def fallback_split_composer_names(session, df, composer_col):
     try:
         return session.sql(sql)
     except Exception as e:
-        logger.error(f"Fallback method also failed: {str(e)}")
-        # If both methods fail, return the original dataframe with warning
-        logger.warning("Unable to split composer names, returning original dataframe")
+        print(f"Fallback method also failed: {str(e)}")
+        print("Warning: Unable to split composer names, returning original dataframe")
         return df
 
 
-def phase1_preprocessing(session):
-    """Phase 1: Preprocessing and identifying truncated composers using Snowpark"""
-    logger.info("Starting Phase 1: Preprocessing and truncation identification...")
+# Phase 1
+def phase1_preprocessing(session, use_example_data=False, data_sources=None, save_to_tables=True):
+    # Phase 1: Preprocessing and identifying truncated composers
+
+    print("Initiating Phase 1: Preprocessing and truncation identification...")
 
     try:
-        # Load data from Snowflake tables
-        adc_composers = session.table("EDW_APPS.MATCHING.ADC_COMPOSERS_MATCHED_ISWC_NO_COMPOSER_ID_VW")
-        mazooka_composers = session.table("EDW_APPS.MATCHING.MAZOOKA_COMPOSERS_MATCHED_ISWC_NO_COMPOSER_ID_VW")
-        adc_works = session.table("EDW_APPS.MATCHING.ADC_WORKS_MATCHED_ISWC_VW")
-
-        # Get row counts for initial data
-        adc_count = adc_composers.count()
-        mazooka_count = mazooka_composers.count()
-        logger.info(f"Loaded {adc_count} ADC composer rows and {mazooka_count} Mazooka composer rows")
+        # Either use the example data or load from Snowflake tables
+        if use_example_data and data_sources:
+            print("Using example dataset for Phase 1")
+            adc_composers = data_sources["adc_composers"]
+            mazooka_composers = data_sources["mazooka_composers"]
+            adc_works = data_sources["adc_works"]
+        else:
+            # Load data from Snowflake tables
+            adc_composers = session.table("EDW_APPS.MATCHING.ADC_COMPOSERS_MATCHED_ISWC_VW")
+            mazooka_composers = session.table("EDW_APPS.MATCHING.MAZOOKA_COMPOSERS_MATCHED_ISWC_VW")
+            adc_works = session.table("EDW_APPS.MATCHING.ADC_WORKS_MATCHED_ISWC_VW")
 
         # Apply Rule 1: Convert text columns to uppercase and trim
         # For ADC data
@@ -132,25 +203,32 @@ def phase1_preprocessing(session):
             if mazooka_composers.schema[column].datatype.type_name() in ['VARCHAR', 'STRING', 'TEXT']:
                 mazooka_composers = mazooka_composers.withColumn(column, clean_text(col(column)))
 
-        logger.info("Text columns cleaned and standardized")
+        print("Text columns cleaned and standardized")
 
-        # Create temporary views for SQL access
-        adc_composers.create_or_replace_temp_view("temp_adc_composers")
-        mazooka_composers.create_or_replace_temp_view("temp_mazooka_composers")
+        # Create temporary views for SQL access with unique names for phase 1
+        adc_composers.create_or_replace_temp_view("temp_adc_composers_phase1")
+        mazooka_composers.create_or_replace_temp_view("temp_mazooka_composers_phase1")
 
         # Use a direct SQL approach for splitting
-        logger.info("Splitting ADC composer names...")
+        print("Splitting ADC composer names...")
         adc_split_sql = """
         WITH source_data AS (
-            SELECT * FROM temp_adc_composers
+            SELECT * FROM temp_adc_composers_phase1
+        ),
+        cleaned AS (
+            SELECT 
+                *,
+                TRIM(REGEXP_REPLACE(NAME, '\\\\([^\\\\)]*\\\\)', '')) AS cleaned_name
+            FROM 
+                source_data
         ),
         slash_split AS (
             SELECT 
                 src.*,
                 TRIM(f.value) as split_value
             FROM 
-                source_data src,
-                LATERAL FLATTEN(input => STRTOK_TO_ARRAY(src.NAME, '/')) f
+                cleaned src,
+                LATERAL FLATTEN(input => STRTOK_TO_ARRAY(src.cleaned_name, '/')) f
         ),
         semicolon_split AS (
             SELECT 
@@ -174,20 +252,27 @@ def phase1_preprocessing(session):
         )
 
         expanded_adc_df = session.sql(adc_split_sql)
-        logger.info(f"Expanded ADC data to approximately {expanded_adc_df.count()} rows")
+        print(f"Expanded ADC data to approximately {expanded_adc_df.count()} rows")
 
-        logger.info("Splitting Mazooka composer names...")
+        print("Splitting Mazooka composer names...")
         mazooka_split_sql = """
         WITH source_data AS (
-            SELECT * FROM temp_mazooka_composers
+            SELECT * FROM temp_mazooka_composers_phase1
+        ),
+        cleaned AS (
+            SELECT 
+                *,
+                TRIM(REGEXP_REPLACE(COMPOSER, '\\\\([^\\\\)]*\\\\)', '')) AS cleaned_composer
+            FROM 
+                source_data
         ),
         slash_split AS (
             SELECT 
                 src.*,
                 TRIM(f.value) as split_value
             FROM 
-                source_data src,
-                LATERAL FLATTEN(input => STRTOK_TO_ARRAY(src.COMPOSER, '/')) f
+                cleaned src,
+                LATERAL FLATTEN(input => STRTOK_TO_ARRAY(src.cleaned_composer, '/')) f
         ),
         semicolon_split AS (
             SELECT 
@@ -211,14 +296,14 @@ def phase1_preprocessing(session):
         )
 
         expanded_mazooka_df = session.sql(mazooka_split_sql)
-        logger.info(f"Expanded Mazooka data to approximately {expanded_mazooka_df.count()} rows")
+        print(f"Expanded Mazooka data to approximately {expanded_mazooka_df.count()} rows")
 
-        # Create temporary views for the expanded dataframes
-        expanded_adc_df.create_or_replace_temp_view("temp_expanded_adc")
-        expanded_mazooka_df.create_or_replace_temp_view("temp_expanded_mazooka")
+        # Create temporary views for the expanded dataframes with unique names
+        expanded_adc_df.create_or_replace_temp_view("temp_expanded_adc_phase1")
+        expanded_mazooka_df.create_or_replace_temp_view("temp_expanded_mazooka_phase1")
 
-        # Count composers per work and per track using explicit SQL
-        logger.info("Counting composers per work and track...")
+        # Count composers per work and per track
+        print("Counting composers per work and track...")
 
         # For ADC data
         adc_count_sql = """
@@ -226,7 +311,7 @@ def phase1_preprocessing(session):
             APRA_WORK_ID, 
             COUNT(*) AS ADC_COMPOSERS_COUNT
         FROM 
-            temp_expanded_adc
+            temp_expanded_adc_phase1
         GROUP BY 
             APRA_WORK_ID
         """
@@ -239,14 +324,14 @@ def phase1_preprocessing(session):
             ISWC, 
             COUNT(*) AS MAZOOKA_COMPOSERS_COUNT
         FROM 
-            temp_expanded_mazooka
+            temp_expanded_mazooka_phase1
         GROUP BY 
             TRACK_ID, ISWC
         """
         mazooka_composer_count = session.sql(mazooka_count_sql)
 
         # Create temporary view for mazooka_composer_count
-        mazooka_composer_count.create_or_replace_temp_view("temp_mazooka_count")
+        mazooka_composer_count.create_or_replace_temp_view("temp_mazooka_count_phase1")
 
         # Get the max MAZOOKA_COMPOSERS_COUNT for each ISWC
         mazooka_max_sql = """
@@ -254,11 +339,14 @@ def phase1_preprocessing(session):
             ISWC, 
             MAX(MAZOOKA_COMPOSERS_COUNT) AS MAZOOKA_COMPOSERS_COUNT
         FROM 
-            temp_mazooka_count
+            temp_mazooka_count_phase1
         GROUP BY 
             ISWC
         """
         mazooka_max_count = session.sql(mazooka_max_sql)
+
+        # Make sure adc_works is available as a temp view with unique name for phase 1
+        adc_works.create_or_replace_temp_view("temp_adc_works_phase1")
 
         # Merge work data with composer counts
         work_data = adc_works.join(adc_composer_count, on=["APRA_WORK_ID"], how="left")
@@ -268,28 +356,34 @@ def phase1_preprocessing(session):
         work_data = work_data.fillna({"ADC_COMPOSERS_COUNT": 0, "MAZOOKA_COMPOSERS_COUNT": 0})
 
         # Get composer_names length
-        if "COMPOSERS" in work_data.columns:
-            work_data = work_data.withColumn("COMPOSER_NAME_LENGTH", length(col("COMPOSERS")))
+        if "COMPOSER_NAMES" in work_data.columns:
+            work_data = work_data.withColumn("COMPOSER_NAME_LENGTH", length(col("COMPOSER_NAMES")))
         else:
             work_data = work_data.withColumn("COMPOSER_NAME_LENGTH", lit(0))
 
-        # Apply the truncation rule
+        # Apply the FIXED truncation rule - now checking for exactly 40 chars or 39 chars with trailing space
         work_data = work_data.withColumn(
             "YN_COMPOSERS_TRUNC",
             when(
                 (col("YN_PERF_OWNERSHIP") == "N") &
-                (col("COMPOSER_NAME_LENGTH") >= 39) &
+                (
+                        (col("COMPOSER_NAME_LENGTH") == 40) |
+                        ((col("COMPOSER_NAME_LENGTH") == 39) &
+                         col("COMPOSER_NAMES").endswith(" "))
+                ) &
                 (col("ADC_COMPOSERS_COUNT") < col("MAZOOKA_COMPOSERS_COUNT")),
                 lit("Y")
             ).otherwise(lit("N"))
         )
 
-        # Save intermediate tables to Snowflake
-        expanded_adc_df.write.mode("overwrite").save_as_table("PHASE1_CLEANED_ADC_COMPOSERS")
-        expanded_mazooka_df.write.mode("overwrite").save_as_table("PHASE1_CLEANED_MAZOOKA_COMPOSERS")
-        work_data.write.mode("overwrite").save_as_table("PHASE1_WORK_DATA_WITH_FLAGS")
-
-        logger.info("Phase 1 complete! Intermediate tables created for Phase 2.")
+        # Save intermediate tables to Snowflake if requested
+        if save_to_tables:
+            expanded_adc_df.write.mode("overwrite").save_as_table("PHASE1_CLEANED_ADC_COMPOSERS")
+            expanded_mazooka_df.write.mode("overwrite").save_as_table("PHASE1_CLEANED_MAZOOKA_COMPOSERS")
+            work_data.write.mode("overwrite").save_as_table("PHASE1_WORK_DATA_WITH_FLAGS")
+            print("Phase 1 complete! Intermediate tables created for Phase 2.")
+        else:
+            print("Phase 1 complete! (Tables not saved in example mode)")
 
         return {
             "cleaned_adc_composers": expanded_adc_df,
@@ -297,562 +391,702 @@ def phase1_preprocessing(session):
             "work_data_with_flags": work_data
         }
     except Exception as e:
-        logger.error(f"Error in phase1_preprocessing: {str(e)}", exc_info=True)
+        print(f"Error in phase1_preprocessing: {str(e)}")
         raise
 
 
-def parse_name(session):
-    """Create UDF to parse names into first and last name components"""
-    from snowflake.snowpark.types import StringType, StructType, StructField
+# Helper Functions for Phase 2
+def create_enhanced_parse_name_function(session):
+    """Create the enhanced name parsing function that handles different formats"""
+    session.sql("""
+    CREATE OR REPLACE FUNCTION ENHANCED_PARSE_NAME_SQL(name STRING)
+    RETURNS OBJECT
+    LANGUAGE JAVASCRIPT
+    AS
+    $$
+    function enhancedParseNameJS(name) {
+        if (!name || name === "") {
+            return {first: "", last: "", middle: "", suffix: "", is_initial: false};
+        }
 
-    def _parse_name(name):
-        """Parse a name string into first and last name components"""
-        if name is None or name == "":
-            return {"first": "", "last": ""}
+        // Remove content in brackets first
+        name = name.replace(/\\(.*?\\)/g, "");
 
-        # Special suffixes that should be kept with last name
-        suffixes = ["SENIOR", "SNR", "SR", "JUNIOR", "JNR", "JR"]
+        // Special suffixes and prefixes
+        const suffixes = ["SENIOR", "SNR", "SR", "JUNIOR", "JNR", "JR"];
+        const special_prefixes = ["VAN", "VON", "DE", "DER", "LA", "LE", "DI", "DEL", "DOS", "DA", "DU", "AL", "EL"];
 
-        # Special prefixes for multi-word last names
-        special_prefixes = ["VAN", "VON", "DE", "DER", "LA", "LE", "DI", "DEL", "DOS", "DA", "DU", "AL", "EL"]
+        // Clean and split the name
+        name = name.trim().toUpperCase();
+        let parts = name.split(/\\s+/);
 
-        # Clean and split the name
-        name = name.strip()
-        parts = name.split()
+        // Handle name with no spaces
+        if (parts.length === 1) {
+            return {first: "", last: parts[0], middle: "", suffix: "", is_initial: false};
+        }
 
-        # Handle name with no spaces
-        if len(parts) == 1:
-            return {"first": "", "last": parts[0]}
-
-        # Check if this is in "LAST FIRST" format - common in music industry
-        if len(parts) == 2:
-            # If second part is single letter (likely an initial)
-            if len(parts[1]) == 1:
-                # This is likely "LASTNAME INITIAL" format
-                return {"first": parts[1], "last": parts[0]}
-            # If first part is single letter (likely an initial)
-            elif len(parts[0]) == 1:
-                # This is likely "INITIAL LASTNAME" format
-                return {"first": parts[0], "last": parts[1]}
-
-        # Handle standard "FIRST LAST" format first
-        first_name_candidate = parts[0]
-        last_name_candidate = " ".join(parts[1:]) if len(parts) > 1 else ""
-
-        # Check for special multi-word last names (e.g., "VAN BEETHOVEN")
-        for i, part in enumerate(parts):
-            if part in special_prefixes and i < len(parts) - 1:
-                # Found a special prefix, assume format is "FIRST PREFIX LASTNAME" or just "PREFIX LASTNAME"
-                if i == 0:  # If prefix is first word, assume no first name
-                    return {"first": "", "last": " ".join(parts)}
-                else:  # Otherwise assume format is "FIRST PREFIX LASTNAME"
-                    return {"first": " ".join(parts[:i]), "last": " ".join(parts[i:])}
-
-        # Default: standard format "FIRST LAST"
-        return {"first": first_name_candidate, "last": last_name_candidate}
-
-    # Create a Snowpark UDF with a struct return type
-    return_type = StructType([
-        StructField("first", StringType()),
-        StructField("last", StringType())
-    ])
-
-    return session.udf.register(
-        func=_parse_name,
-        name="PARSE_NAME_UDF",
-        input_types=[StringType()],
-        return_type=return_type,
-        replace=True
-    )
-
-
-def calculate_name_points(session):
-    """Create UDF to calculate the maximum points for a name"""
-    from snowflake.snowpark.types import FloatType, StructType, StructField, StringType
-
-    def _calculate_name_points(name_struct):
-        """Calculate the maximum points for a name"""
-        if name_struct is None:
-            return 0.0
-
-        points = 0.0
-
-        # Last name points
-        if name_struct["last"]:
-            points += 2.0  # Maximum possible for last name
-
-        # First name points
-        if name_struct["first"]:
-            if len(name_struct["first"]) == 1:  # Initial
-                points += 0.5  # Maximum possible for initial
-            else:
-                points += 1.0  # Maximum possible for full first name
-
-        return points
-
-    return session.udf.register(
-        func=_calculate_name_points,
-        name="CALCULATE_NAME_POINTS_UDF",
-        input_types=[StructType([
-            StructField("first", StringType()),
-            StructField("last", StringType())
-        ])],
-        return_type=FloatType(),
-        replace=True
-    )
-
-
-def phase2_name_parsing(session):
-    """Phase 2: Parse names into first and last name components"""
-    logger.info("Starting Phase 2: Name parsing...")
-
-    try:
-        # Load tables from Phase 1
-        adc_composers = session.table("PHASE1_CLEANED_ADC_COMPOSERS")
-        mazooka_composers = session.table("PHASE1_CLEANED_MAZOOKA_COMPOSERS")
-        work_data = session.table("PHASE1_WORK_DATA_WITH_FLAGS")
-
-        logger.info(f"Loaded ADC composers and Mazooka composers")
-
-        # Create UDFs for name parsing and scoring
-        from snowflake.snowpark.types import StringType, StructType, StructField, FloatType
-
-        # Register the UDFs directly using SQL queries instead
-        logger.info("Creating name parsing UDFs...")
-
-        # Create temporary views for the dataframes
-        adc_composers.create_or_replace_temp_view("temp_adc_composers")
-        work_data.create_or_replace_temp_view("temp_work_data")
-        mazooka_composers.create_or_replace_temp_view("temp_mazooka_composers")
-
-        # Create name parsing function in Snowflake
-        session.sql("""
-        CREATE OR REPLACE FUNCTION PARSE_NAME_SQL(name STRING)
-        RETURNS OBJECT
-        LANGUAGE JAVASCRIPT
-        AS
-        $$
-        function parseNameJS(name) {
-            if (!name || name === "") {
-                return {first: "", last: ""};
+        // Check for and extract suffixes
+        let suffix = "";
+        for (const suffixTerm of suffixes) {
+            const suffixIndex = parts.findIndex(part => part === suffixTerm);
+            if (suffixIndex !== -1) {
+                suffix = parts[suffixIndex];
+                parts.splice(suffixIndex, 1); // Remove suffix from parts
+                break;
             }
+        }
 
-            // Special suffixes and prefixes
-            var suffixes = ["SENIOR", "SNR", "SR", "JUNIOR", "JNR", "JR"];
-            var special_prefixes = ["VAN", "VON", "DE", "DER", "LA", "LE", "DI", "DEL", "DOS", "DA", "DU", "AL", "EL"];
+        // After removing suffix, check if we're back to a single name
+        if (parts.length === 1) {
+            return {first: "", last: parts[0], middle: "", suffix: suffix, is_initial: false};
+        }
 
-            // Clean and split the name
-            name = name.trim();
-            var parts = name.split(/\s+/);
+        // Check for special multi-word last names (e.g., "VAN BEETHOVEN")
+        for (let i = 0; i < parts.length - 1; i++) {
+            if (special_prefixes.includes(parts[i])) {
+                // Found a special prefix - handle according to position
+                if (i === 0) {
+                    // If prefix is first word, assume format: PREFIX LASTNAME [FIRSTNAME]
+                    if (parts.length > 2) {
+                        // We have PREFIX LASTNAME FIRSTNAME format
+                        const lastName = parts.slice(0, 2).join(" ");
+                        const firstName = parts[2];
+                        const middleName = parts.slice(3).join(" ");
+                        const isInitial = firstName && firstName.length === 1;
 
-            // Handle name with no spaces
-            if (parts.length === 1) {
-                return {first: "", last: parts[0]};
-            }
-
-            // Check if this is in "LAST FIRST" format - common in music industry
-            if (parts.length === 2) {
-                // If second part is single letter (likely an initial)
-                if (parts[1].length === 1) {
-                    // This is likely "LASTNAME INITIAL" format
-                    return {first: parts[1], last: parts[0]};
-                }
-                // If first part is single letter (likely an initial)
-                else if (parts[0].length === 1) {
-                    // This is likely "INITIAL LASTNAME" format
-                    return {first: parts[0], last: parts[1]};
-                }
-            }
-
-            // Handle standard "FIRST LAST" format first
-            var first_name_candidate = parts[0];
-            var last_name_candidate = parts.slice(1).join(" ");
-
-            // Check for special multi-word last names (e.g., "VAN BEETHOVEN")
-            for (var i = 0; i < parts.length; i++) {
-                if (special_prefixes.includes(parts[i]) && i < parts.length - 1) {
-                    // Found a special prefix
-                    if (i === 0) {
-                        // If prefix is first word, assume no first name
-                        return {first: "", last: parts.join(" ")};
-                    } else {
-                        // Otherwise assume format is "FIRST PREFIX LASTNAME"
                         return {
-                            first: parts.slice(0, i).join(" "),
-                            last: parts.slice(i).join(" ")
+                            first: firstName,
+                            last: lastName,
+                            middle: middleName,
+                            suffix: suffix,
+                            is_initial: isInitial
                         };
+                    } else {
+                        // We just have PREFIX LASTNAME
+                        return {
+                            first: "",
+                            last: parts.join(" "),
+                            middle: "",
+                            suffix: suffix,
+                            is_initial: false
+                        };
+                    }
+                } else {
+                    // Otherwise assume format is "FIRSTNAME PREFIX LASTNAME"
+                    const firstName = parts.slice(0, i).join(" ");
+                    const lastName = parts.slice(i).join(" ");
+                    const isInitial = firstName.length === 1;
+
+                    return {
+                        first: firstName,
+                        last: lastName,
+                        middle: "",
+                        suffix: suffix,
+                        is_initial: isInitial
+                    };
+                }
+            }
+        }
+
+        // Parse based on number of parts (after removing suffix)
+        if (parts.length === 2) {
+
+            const std_format = {
+                first: parts[0],
+                last: parts[1],
+                middle: "",
+                suffix: suffix,
+                is_initial: parts[0].length === 1
+            };
+
+            const alt_format = {
+                first: parts[1],
+                last: parts[0],
+                middle: "",
+                suffix: suffix,
+                is_initial: parts[1].length === 1
+            };
+
+            // Return both formats for checking
+            return {
+                first: std_format.first,
+                last: std_format.last,
+                middle: "",
+                suffix: suffix,
+                is_initial: std_format.is_initial,
+                alt_first: alt_format.first,
+                alt_last: alt_format.last,
+                alt_is_initial: alt_format.is_initial
+            };
+        } 
+        else if (parts.length >= 3) {
+            // Multi-word name: Need to handle both formats
+            // ADC format: LASTNAME FIRSTNAME MIDDLENAME
+            // Mazooka format: FIRSTNAME MIDDLENAME LASTNAME
+
+            // Standard format (assume Mazooka style: First Middle Last)
+            const std_format = {
+                first: parts[0],
+                middle: parts.slice(1, parts.length - 1).join(" "),
+                last: parts[parts.length - 1]
+            };
+
+            // Alternative format (assume ADC style: Last First Middle)
+            const alt_format = {
+                first: parts[1],
+                middle: parts.slice(2).join(" "),
+                last: parts[0]
+            };
+
+            return {
+                first: std_format.first,
+                last: std_format.last,
+                middle: std_format.middle,
+                suffix: suffix,
+                is_initial: std_format.first.length === 1,
+                alt_first: alt_format.first,
+                alt_last: alt_format.last,
+                alt_is_initial: alt_format.first.length === 1
+            };
+        }
+
+        // Default fallback (should not reach here with the above logic)
+        return {
+            first: parts[0], 
+            last: parts.slice(1).join(" "),
+            middle: "",
+            suffix: suffix, 
+            is_initial: parts[0].length === 1
+        };
+    }
+
+    return enhancedParseNameJS(NAME);
+    $$
+    """).collect()
+
+
+def create_enhanced_calculate_name_score_function(session):
+    session.sql("""
+    CREATE OR REPLACE FUNCTION ENHANCED_CALCULATE_NAME_SCORE_SQL(name_obj OBJECT)
+    RETURNS FLOAT
+    LANGUAGE JAVASCRIPT
+    AS
+    $$
+    function calculateNameScore(name_obj) {
+        if (!name_obj) {
+            return 0.0;
+        }
+
+        let score = 0.0;
+        const hasFirst = name_obj.first && name_obj.first.trim().length > 0;
+        const hasLast = name_obj.last && name_obj.last.trim().length > 0;
+        const isFirstInitial = name_obj.is_initial;
+
+        // Scoring based on the specified requirements:
+        // - Last name: 2 points
+        if (hasLast) {
+            score += 2.0;
+        }
+
+        // - First name: 1 point (or 0.5 if it's an initial)
+        if (hasFirst) {
+            if (isFirstInitial) {
+                score += 0.5;
+            } else {
+                score += 1.0;
+            }
+        }
+
+        return score;
+    }
+
+    return calculateNameScore(NAME_OBJ);
+    $$
+    """).collect()
+
+
+def create_enhanced_similarity_function(session):
+    session.sql("""
+    CREATE OR REPLACE FUNCTION ENHANCED_NAME_SIMILARITY_SCORE(
+        adc_name STRING,
+        mazooka_name STRING,
+        apra_score FLOAT,
+        mazooka_score FLOAT)
+    RETURNS OBJECT
+    LANGUAGE JAVASCRIPT
+    AS
+    $$
+    function calculateStringSimilarity(s1, s2) {
+        if (!s1 || !s2) return 0;
+        if (s1 === s2) return 1.0;
+
+        // Convert to uppercase for comparison
+        const str1 = s1.toUpperCase().trim();
+        const str2 = s2.toUpperCase().trim();
+
+        if (str1 === str2) return 1.0;
+        if (str1 === "" || str2 === "") return 0.0;
+
+        // Calculate Levenshtein distance for similarity
+        const len1 = str1.length;
+        const len2 = str2.length;
+
+        // Create the distance matrix
+        const matrix = Array(len1 + 1).fill().map(() => Array(len2 + 1).fill(0));
+
+        // Initialize first row and column
+        for (let i = 0; i <= len1; i++) matrix[i][0] = i;
+        for (let j = 0; j <= len2; j++) matrix[0][j] = j;
+
+        // Fill the matrix
+        for (let i = 1; i <= len1; i++) {
+            for (let j = 1; j <= len2; j++) {
+                const cost = str1[i-1] === str2[j-1] ? 0 : 1;
+                matrix[i][j] = Math.min(
+                    matrix[i-1][j] + 1,      // deletion
+                    matrix[i][j-1] + 1,      // insertion
+                    matrix[i-1][j-1] + cost  // substitution
+                );
+            }
+        }
+
+        // Get the distance and calculate similarity
+        const distance = matrix[len1][len2];
+        const maxLen = Math.max(len1, len2);
+
+        return 1 - (distance / maxLen);
+    }
+
+    /**
+     * Normalize names to handle special cases:
+     * 1. Remove/normalize generational suffixes
+     * 2. Replace hyphens with spaces to handle hyphenated names
+     * 3. Normalize special prefixes
+     */
+    function normalizeNameForComparison(name) {
+        if (!name) return "";
+
+        name = name.toUpperCase().trim();
+
+        // 1. Remove generational suffixes: I, II, III, IV, V and their variations
+        name = name.replace(/\\b(I{1,3}|IV|V|1ST|2ND|3RD|[4-9]TH)\\b$/g, "").trim();
+
+        // 2. Replace hyphens with spaces for better matching
+        name = name.replace(/-/g, " ");
+
+        // 3. Special handling for prefixes - ensure consistent spacing
+        const special_prefixes = ["VAN", "VON", "DE", "DER", "LA", "LE", "DI", "DEL", "DOS", "DA", "DU", "AL", "EL", "JESUS", "CHAVEZ"];
+
+        // Create regex patterns for each prefix to match only when it's a standalone word
+        for (const prefix of special_prefixes) {
+            const regex = new RegExp(`\\\\b${prefix}\\\\b`, 'g');
+            // Ensure consistent spacing for each prefix
+            name = name.replace(regex, prefix);
+        }
+
+        // Remove extra whitespace
+        name = name.replace(/\\s+/g, " ").trim();
+
+        return name;
+    }
+
+    /**
+     * Enhanced name parsing that:
+     * 1. Handles hyphenated names by treating them as single units
+     * 2. Properly handles special prefixes
+     * 3. Removes generational suffixes
+     * 4. Recognizes multiple name formats
+     */
+    function parseNameComponents(name) {
+        if (!name || name === "") {
+            return {first: "", last: "", middle: "", suffix: "", is_initial: false};
+        }
+
+        // Remove content in brackets first
+        name = name.replace(/\\([^\\)]*\\)/g, "");
+
+        // Normalize the name first
+        name = normalizeNameForComparison(name);
+
+        // Special suffixes and prefixes
+        const suffixes = ["SENIOR", "SNR", "SR", "JUNIOR", "JNR", "JR"];
+        const special_prefixes = ["VAN", "VON", "DE", "DER", "LA", "LE", "DI", "DEL", "DOS", "DA", "DU", "AL", "EL", "JESUS", "CHAVEZ"];
+
+        // Clean and split the name
+        name = name.trim().toUpperCase();
+        let parts = name.split(/\\s+/);
+
+        // Handle name with no spaces
+        if (parts.length === 1) {
+            return {first: "", last: parts[0], middle: "", suffix: "", is_initial: false};
+        }
+
+        // Check for and extract suffixes
+        let suffix = "";
+        for (const suffixTerm of suffixes) {
+            const suffixIndex = parts.findIndex(part => part === suffixTerm);
+            if (suffixIndex !== -1) {
+                suffix = parts[suffixIndex];
+                parts.splice(suffixIndex, 1); // Remove suffix from parts
+                break;
+            }
+        }
+
+        // After removing suffix, check if we're back to a single name
+        if (parts.length === 1) {
+            return {first: "", last: parts[0], middle: "", suffix: "", is_initial: false};
+        }
+
+        // Special handling for hyphenated names (that are now separated by spaces after normalization)
+        // We've already replaced hyphens with spaces in normalizeNameForComparison
+        // Now we need to detect patterns that suggest these were originally hyphenated
+
+        // Look for special cases in multi-part names
+        const formatsToCheck = [];
+
+        // Format 1: LASTNAME FIRSTNAME MIDDLENAME (ADC Style)
+        formatsToCheck.push({
+            first: parts.length > 1 ? parts[1] : "",
+            last: parts[0],
+            middle: parts.length > 2 ? parts.slice(2).join(" ") : "",
+            suffix: suffix,
+            is_initial: parts.length > 1 && parts[1].length === 1
+        });
+
+        // Format 2: FIRSTNAME MIDDLENAME LASTNAME (Mazooka Style)
+        formatsToCheck.push({
+            first: parts[0],
+            last: parts.length > 1 ? parts[parts.length - 1] : "",
+            middle: parts.length > 2 ? parts.slice(1, parts.length - 1).join(" ") : "",
+            suffix: suffix,
+            is_initial: parts[0].length === 1
+        });
+
+        // Format 3: For cases like "URIETA MARTIN SOLANO" vs "MARTIN URIETA SOLANO"
+        // Treat first two parts as first name and the last part as last name
+        if (parts.length >= 3) {
+            formatsToCheck.push({
+                first: parts.slice(0, 2).join(" "),
+                last: parts[parts.length - 1],
+                middle: parts.length > 3 ? parts.slice(2, parts.length - 1).join(" ") : "",
+                suffix: suffix,
+                is_initial: false
+            });
+        }
+
+        // Format 4: For cases with hyphenated last names "JIMENEZ-SANDOVAL JOSE ALFREDO"
+        // If we originally had multiple parts and now post-hyphen normalization have 3+ parts
+        if (parts.length >= 3) {
+            // Try treating the first two parts as a compound last name
+            formatsToCheck.push({
+                first: parts.slice(2).join(" "),
+                last: parts.slice(0, 2).join(" "),
+                middle: "",
+                suffix: suffix,
+                is_initial: false
+            });
+
+            // And try the last two parts as a compound last name
+            if (parts.length >= 3) {
+                formatsToCheck.push({
+                    first: parts.slice(0, parts.length - 2).join(" "),
+                    last: parts.slice(parts.length - 2).join(" "),
+                    middle: "",
+                    suffix: suffix,
+                    is_initial: false
+                });
+            }
+        }
+
+        return { formats: formatsToCheck };
+    }
+
+    /**
+     * Calculate the match score between two names
+     */
+    function calculateMatchScore(adcFormat, mazookaFormat, adcScore, mazookaScore) {
+        // Validate inputs
+        if (!adcFormat || !mazookaFormat) {
+            return { score: 0, smp: 0, tap: Math.max(adcScore || 3, mazookaScore || 3) };
+        }
+
+        const adcFirst = adcFormat.first || "";
+        const adcLast = adcFormat.last || "";
+        const adcIsInitial = adcFormat.is_initial || false;
+
+        const mazookaFirst = mazookaFormat.first || "";
+        const mazookaLast = mazookaFormat.last || "";
+        const mazookaIsInitial = mazookaFormat.is_initial || false;
+
+        // Calculate ATAP and STAP
+        const ATAP = adcScore || 3;
+        const STAP = mazookaScore || 3;
+        const TAP = Math.max(ATAP, STAP);
+
+        // Skip if either last name is missing
+        if (!adcLast || !mazookaLast) {
+            return {
+                smp: 0,
+                tap: TAP,
+                atap: ATAP,
+                stap: STAP,
+                score: 0
+            };
+        }
+
+        // Normalize names for comparison
+        const normalizedAdcLast = normalizeNameForComparison(adcLast);
+        const normalizedMazookaLast = normalizeNameForComparison(mazookaLast);
+        const normalizedAdcFirst = normalizeNameForComparison(adcFirst);
+        const normalizedMazookaFirst = normalizeNameForComparison(mazookaFirst);
+
+        // Initialize scores
+        let lastNameScore = 0;
+        let firstNameScore = 0;
+        let initialScore = 0;
+
+        // Check last name match
+        if (normalizedAdcLast === normalizedMazookaLast) {
+            lastNameScore = 2; // Exact match
+        } else {
+            // Check for fuzzy match
+            const similarity = calculateStringSimilarity(normalizedAdcLast, normalizedMazookaLast);
+            if (similarity >= 0.93) {
+                lastNameScore = 1.5; // Fuzzy match
+            }
+        }
+
+        // Check first name match - only if we have first names
+        if (normalizedAdcFirst && normalizedMazookaFirst) {
+            if (normalizedAdcFirst === normalizedMazookaFirst) {
+                firstNameScore = 1; // Exact match
+            } else {
+                // Check for fuzzy match
+                const similarity = calculateStringSimilarity(normalizedAdcFirst, normalizedMazookaFirst);
+                if (similarity >= 0.93) {
+                    firstNameScore = 0.5; // Fuzzy match
+                }
+                // Only check initial match if we didn't get a better match already
+                else if (firstNameScore === 0 && 
+                        normalizedAdcFirst.charAt(0) === normalizedMazookaFirst.charAt(0)) {
+                    if (adcIsInitial || mazookaIsInitial) {
+                        initialScore = 0.5; // Initial match
+                    }
+                }
+            }
+        }
+
+        // Calculate SMP
+        const SMP = lastNameScore + firstNameScore + initialScore;
+
+        // Calculate score
+        const score = Math.min(SMP / TAP, 1.0); // Ensure score never exceeds 1.0
+
+        return {
+            smp: SMP,
+            tap: TAP,
+            atap: ATAP,
+            stap: STAP,
+            last_name_score: lastNameScore,
+            first_name_score: firstNameScore,
+            initial_score: initialScore,
+            score: score
+        };
+    }
+
+    /**
+     * Main function to calculate name similarity with enhanced logic
+     */
+    function enhancedNameSimilarityScore(adcName, mazookaName, adcScore, mazookaScore) {
+        try {
+            // Normalize names first to handle general cases
+            const normalizedAdcName = normalizeNameForComparison(adcName);
+            const normalizedMazookaName = normalizeNameForComparison(mazookaName);
+
+            // Direct comparison after normalization for efficiency
+            // This handles many simple cases like suffixes or special formats
+            if (normalizedAdcName === normalizedMazookaName) {
+                return {
+                    smp: Math.min(adcScore, mazookaScore),
+                    tap: Math.max(adcScore, mazookaScore),
+                    atap: adcScore || 3,
+                    stap: mazookaScore || 3,
+                    score: 1.0  // Perfect match after normalization
+                };
+            }
+
+            // Parse both names to try different formats
+            const adcParsed = parseNameComponents(adcName);
+            const mazookaParsed = parseNameComponents(mazookaName);
+
+            // Try all possible format combinations and take the best score
+            let bestScore = {
+                smp: 0,
+                tap: Math.max(adcScore || 3, mazookaScore || 3),
+                atap: adcScore || 3,
+                stap: mazookaScore || 3,
+                score: 0
+            };
+
+            // Iterate through all format combinations
+            for (const adcFormat of adcParsed.formats) {
+                for (const mazookaFormat of mazookaParsed.formats) {
+                    const currentScore = calculateMatchScore(
+                        adcFormat,
+                        mazookaFormat,
+                        adcScore,
+                        mazookaScore
+                    );
+
+                    if (currentScore.score > bestScore.score) {
+                        bestScore = currentScore;
                     }
                 }
             }
 
-            // Default: standard format "FIRST LAST"
-            return {first: first_name_candidate, last: last_name_candidate};
+            return bestScore;
+        } catch (e) {
+            // Fallback to a safe default if any errors occur
+            return {
+                smp: 0,
+                tap: Math.max(adcScore || 3, mazookaScore || 3),
+                atap: adcScore || 3,
+                stap: mazookaScore || 3,
+                last_name_score: 0,
+                first_name_score: 0,
+                initial_score: 0,
+                score: 0,
+                error: e.toString()
+            };
         }
+    }
 
-        return parseNameJS(NAME);
-        $$;
-        """).collect()
+    // Execute with the provided names and scores
+    return enhancedNameSimilarityScore(ADC_NAME, MAZOOKA_NAME, APRA_SCORE, MAZOOKA_SCORE);
+    $$
+    """).collect()
 
-        # Create name points calculation function in Snowflake
-        session.sql("""
-        CREATE OR REPLACE FUNCTION CALCULATE_NAME_POINTS_SQL(name_obj OBJECT)
-        RETURNS FLOAT
-        LANGUAGE JAVASCRIPT
-        AS
-        $$
-        function calculateNamePoints(name_obj) {
-            if (!name_obj) {
-                return 0.0;
-            }
 
-            var points = 0.0;
+# Phase 2
+def phase2_enhanced_name_parsing(session, use_example_data=False, phase1_results=None, save_to_tables=True):
+    print("Initiating Phase 2: Enhanced name parsing with flexible format handling...")
 
-            // Last name points
-            if (name_obj.last) {
-                points += 2.0;  // Maximum possible for last name
-            }
+    try:
+        # Either use the data from Phase 1 or load from Snowflake tables
+        if use_example_data and phase1_results:
+            print("Using example dataset from Phase 1 for Phase 2")
+            adc_composers = phase1_results["cleaned_adc_composers"]
+            mazooka_composers = phase1_results["cleaned_mazooka_composers"]
+            work_data = phase1_results["work_data_with_flags"]
+        else:
+            # Load tables from Phase 1
+            adc_composers = session.table("PHASE1_CLEANED_ADC_COMPOSERS")
+            mazooka_composers = session.table("PHASE1_CLEANED_MAZOOKA_COMPOSERS")
+            work_data = session.table("PHASE1_WORK_DATA_WITH_FLAGS")
 
-            // First name points
-            if (name_obj.first) {
-                if (name_obj.first.length === 1) {  // Initial
-                    points += 0.5;  // Maximum possible for initial
-                } else {
-                    points += 1.0;  // Maximum possible for full first name
-                }
-            }
+        # Create temporary views for the dataframes with unique names for phase 2
+        adc_composers.create_or_replace_temp_view("temp_adc_composers_phase2")
+        work_data.create_or_replace_temp_view("temp_work_data_phase2")
+        mazooka_composers.create_or_replace_temp_view("temp_mazooka_composers_phase2")
 
-            return points;
-        }
-
-        return calculateNamePoints(NAME_OBJ);
-        $$;
-        """).collect()
-
-        logger.info("UDFs created successfully")
-
-        # Process ADC names
-        logger.info("Parsing ADC composer names...")
+        # Create the enhanced functions
+        create_enhanced_parse_name_function(session)
+        create_enhanced_calculate_name_score_function(session)
 
         adc_parsed_sql = """
         SELECT 
             a.APRA_WORK_ID,
             a.ISWC,
             a.NAME as APRA_NAME,
-            PARSE_NAME_SQL(a.NAME):first::STRING as APRA_FIRST_NAME,
-            PARSE_NAME_SQL(a.NAME):last::STRING as APRA_LAST_NAME,
-            CALCULATE_NAME_POINTS_SQL(PARSE_NAME_SQL(a.NAME)) as APRA_NAME_SCORE,
+            a.ADC_COMPOSER_ID,
+            a.IPI,
+            ENHANCED_CALCULATE_NAME_SCORE_SQL(ENHANCED_PARSE_NAME_SQL(a.NAME)) as APRA_NAME_SCORE,
             w.YN_COMPOSERS_TRUNC
         FROM 
-            temp_adc_composers a
+            temp_adc_composers_phase2 a
         LEFT JOIN 
-            temp_work_data w
+            temp_work_data_phase2 w
         ON 
             a.APRA_WORK_ID = w.APRA_WORK_ID
         """
 
         adc_parsed_df = session.sql(adc_parsed_sql)
         adc_count = adc_parsed_df.count()
-        logger.info(f"Parsed {adc_count} ADC composer names")
-
-        # Process Mazooka names
-        logger.info("Parsing Mazooka composer names...")
+        print(f"Parsed {adc_count} ADC composer names with enhanced parser")
 
         mazooka_parsed_sql = """
         SELECT 
             m.TRACK_ID,
             m.ISWC,
             m.COMPOSER as MAZOOKA_NAME,
-            PARSE_NAME_SQL(m.COMPOSER):first::STRING as MAZOOKA_FIRST_NAME,
-            PARSE_NAME_SQL(m.COMPOSER):last::STRING as MAZOOKA_LAST_NAME,
-            CALCULATE_NAME_POINTS_SQL(PARSE_NAME_SQL(m.COMPOSER)) as MAZOOKA_NAME_SCORE
+            ENHANCED_CALCULATE_NAME_SCORE_SQL(ENHANCED_PARSE_NAME_SQL(m.COMPOSER)) as MAZOOKA_NAME_SCORE
         FROM 
-            temp_mazooka_composers m
+            temp_mazooka_composers_phase2 m
         """
 
         mazooka_parsed_df = session.sql(mazooka_parsed_sql)
         mazooka_count = mazooka_parsed_df.count()
-        logger.info(f"Parsed {mazooka_count} Mazooka composer names")
+        print(f"Parsed {mazooka_count} Mazooka composer names with enhanced parser")
 
-        # Save intermediate results to Snowflake tables
-        adc_parsed_df.write.mode("overwrite").save_as_table("PHASE2_ADC_PARSED_NAMES")
-        mazooka_parsed_df.write.mode("overwrite").save_as_table("PHASE2_MAZOOKA_PARSED_NAMES")
-
-        logger.info("Phase 2 complete! Parsed name tables saved for Phase 3.")
+        # Save intermediate results to Snowflake tables if requested
+        if save_to_tables:
+            adc_parsed_df.write.mode("overwrite").save_as_table("PHASE2_ADC_ENHANCED_PARSED_NAMES")
+            mazooka_parsed_df.write.mode("overwrite").save_as_table("PHASE2_MAZOOKA_ENHANCED_PARSED_NAMES")
+            print("Phase 2 complete! Enhanced parsed name tables saved for Phase 3.")
+        else:
+            print("Phase 2 complete! (Tables not saved in example mode)")
 
         return {
             "adc_parsed_df": adc_parsed_df,
             "mazooka_parsed_df": mazooka_parsed_df
         }
     except Exception as e:
-        logger.error(f"Error in phase2_name_parsing: {str(e)}", exc_info=True)
+        print(f"Error in phase2_enhanced_name_parsing: {str(e)}")
         # Print the full traceback for better debugging
         import traceback
-        logger.error(traceback.format_exc())
+        print(traceback.format_exc())
         raise
 
 
-def register_match_score_udf(session):
-    """Register a UDF for calculating name match scores"""
-    from snowflake.snowpark.types import FloatType, StringType
-
-    def calculate_match_score(apra_first_name, apra_last_name, mazooka_first_name, mazooka_last_name):
-        """Calculate match score between two names"""
-        if not apra_last_name or not mazooka_last_name:
-            return 0.0
-
-        score = 0.0
-
-        # Last name exact match (2 points)
-        if apra_last_name == mazooka_last_name:
-            score += 2.0
-
-        # First name exact match (1 point)
-        if apra_first_name and mazooka_first_name and apra_first_name == mazooka_first_name:
-            score += 1.0
-
-        # Initial match (0.5 points) - only if no exact first name match
-        elif (apra_first_name and len(apra_first_name) > 0 and
-              mazooka_first_name and len(mazooka_first_name) > 0 and
-              apra_first_name[0] == mazooka_first_name[0]):
-            score += 0.5
-
-        # Name reversal handling - if first name matches last name AND vice versa
-        if (apra_first_name and apra_last_name and
-                mazooka_first_name and mazooka_last_name):
-
-            if apra_first_name == mazooka_last_name and apra_last_name == mazooka_first_name:
-                # Complete reversal - give full score of 3.0
-                score = max(score, 3.0)
-            elif apra_first_name == mazooka_last_name or apra_last_name == mazooka_first_name:
-                # Partial reversal - give 1.5 points
-                score = max(score, 1.5)
-
-        # Fuzzy matching (simplified for UDF) - check for substrings
-        if score < 2.0 and apra_last_name and mazooka_last_name:
-            # Check if one is substring of the other
-            if apra_last_name in mazooka_last_name or mazooka_last_name in apra_last_name:
-                min_len = min(len(apra_last_name), len(mazooka_last_name))
-                max_len = max(len(apra_last_name), len(mazooka_last_name))
-                if min_len / max_len >= 0.7:
-                    score = max(score, 1.5)
-
-        return score
-
-    # Register the UDF with Snowflake
-    return session.udf.register(
-        func=calculate_match_score,
-        name="MATCH_SCORE_UDF",
-        input_types=[StringType(), StringType(), StringType(), StringType()],
-        return_type=FloatType(),
-        replace=True
-    )
-
-
-def phase3_matching(session):
-    """Phase 3: Generate match scores and final output using pure Python approach"""
-    logger.info("Starting Phase 3: Match score generation using pure Python...")
+# Phase 3
+def phase3_enhanced_matching(session, use_example_data=False, phase2_results=None, save_to_tables=True):
+    print("Initiating Phase 3: Enhanced match score generation with flexible format handling...")
 
     try:
-        # Load intermediate tables from Phase 2
-        adc_parsed_df = session.table("PHASE2_ADC_PARSED_NAMES")
-        mazooka_parsed_df = session.table("PHASE2_MAZOOKA_PARSED_NAMES")
+        # Either use the data from Phase 2 or load from Snowflake tables
+        if use_example_data and phase2_results:
+            print("Using example dataset from Phase 2 for Phase 3")
+            adc_parsed_df = phase2_results["adc_parsed_df"]
+            mazooka_parsed_df = phase2_results["mazooka_parsed_df"]
+        else:
+            adc_parsed_df = session.table("PHASE2_ADC_ENHANCED_PARSED_NAMES")
+            mazooka_parsed_df = session.table("PHASE2_MAZOOKA_ENHANCED_PARSED_NAMES")
 
-        logger.info("Loaded intermediate tables from Phase 2")
-
-        # Debug: Print schema and sample data
-        logger.info("ADC parsed table schema:")
-        for field in adc_parsed_df.schema.fields:
-            logger.info(f"Column: {field.name}, Type: {field.datatype}")
-
-        # Get row counts
         adc_count = adc_parsed_df.count()
         mazooka_count = mazooka_parsed_df.count()
-        logger.info(f"Found {adc_count} ADC records and {mazooka_count} Mazooka records")
+        print(f"Found {adc_count} ADC records and {mazooka_count} Mazooka records")
 
-        # Create temporary views for the dataframes
-        adc_parsed_df.create_or_replace_temp_view("temp_adc_parsed")
-        mazooka_parsed_df.create_or_replace_temp_view("temp_mazooka_parsed")
+        # Create temporary views for the dataframes with unique names for phase 3
+        adc_parsed_df.create_or_replace_temp_view("temp_adc_enhanced_parsed_phase3")
+        mazooka_parsed_df.create_or_replace_temp_view("temp_mazooka_enhanced_parsed_phase3")
 
-        # Create match score function in Snowflake
-        logger.info("Creating match score function...")
+        # Creating enhanced name similarity function
+        create_enhanced_similarity_function(session)
 
-        session.sql("""
-        CREATE OR REPLACE FUNCTION MATCH_SCORE_SQL(apra_first STRING, apra_last STRING, 
-                                                  mazooka_first STRING, mazooka_last STRING)
-        RETURNS FLOAT
-        LANGUAGE JAVASCRIPT
-        AS
-        $$
-        function matchScore(apra_first, apra_last, mazooka_first, mazooka_last) {
-            // Convert null to empty strings
-            apra_first = apra_first || "";
-            apra_last = apra_last || "";
-            mazooka_first = mazooka_first || "";
-            mazooka_last = mazooka_last || "";
-
-            // Skip empty names
-            if (!apra_last || !mazooka_last) {
-                return 0.0;
-            }
-
-            var score = 0.0;
-
-            // Special prefixes for last names
-            var prefixes = ["VAN", "VON", "DE", "DER", "LA", "LE", "DI", "DEL"];
-
-            // Process last names for prefixes
-            var apra_prefix = "";
-            var mazooka_prefix = "";
-
-            for (var i = 0; i < prefixes.length; i++) {
-                var prefix = prefixes[i];
-                if (apra_last.startsWith(prefix + " ")) {
-                    apra_prefix = prefix;
-                    apra_last = apra_last.substring(prefix.length + 1);
-                    break;
-                }
-            }
-
-            for (var i = 0; i < prefixes.length; i++) {
-                var prefix = prefixes[i];
-                if (mazooka_last.startsWith(prefix + " ")) {
-                    mazooka_prefix = prefix;
-                    mazooka_last = mazooka_last.substring(prefix.length + 1);
-                    break;
-                }
-            }
-
-            // Common prefix bonus
-            var prefix_bonus = 0;
-            if (apra_prefix && mazooka_prefix && apra_prefix === mazooka_prefix) {
-                prefix_bonus = 0.2;
-            }
-
-            // Last name exact match (2 points)
-            if (apra_last === mazooka_last) {
-                score += 2.0;
-            } else {
-                // Fuzzy matching for last names
-                if (apra_last && mazooka_last) {
-                    // Check for substring relationship
-                    if (apra_last.includes(mazooka_last) || mazooka_last.includes(apra_last)) {
-                        var min_len = Math.min(apra_last.length, mazooka_last.length);
-                        var max_len = Math.max(apra_last.length, mazooka_last.length);
-                        var substring_ratio = min_len / max_len;
-
-                        if (substring_ratio >= 0.93) { // Changed to 0.93 per requirements
-                            score += 1.5 + prefix_bonus;
-                        }
-                    } else {
-                        // Calculate similarity based on character overlap
-                        var apra_chars = new Set();
-                        var mazooka_chars = new Set();
-
-                        for (var i = 0; i < apra_last.length; i++) {
-                            apra_chars.add(apra_last[i]);
-                        }
-
-                        for (var i = 0; i < mazooka_last.length; i++) {
-                            mazooka_chars.add(mazooka_last[i]);
-                        }
-
-                        // Calculate common characters
-                        var common_chars = new Set();
-                        for (var char of apra_chars) {
-                            if (mazooka_chars.has(char)) {
-                                common_chars.add(char);
-                            }
-                        }
-
-                        var similarity = common_chars.size / Math.max(apra_chars.size, mazooka_chars.size);
-
-                        if (similarity >= 0.93) { // Changed to 0.93 per requirements
-                            score += 1.5 + prefix_bonus;
-                        }
-                    }
-                }
-            }
-
-            // First name exact match (1 point)
-            if (apra_first && mazooka_first && apra_first === mazooka_first) {
-                score += 1.0;
-            } else if (apra_first && mazooka_first) {
-                // Fuzzy matching for first names
-                if (apra_first.includes(mazooka_first) || mazooka_first.includes(apra_first)) {
-                    var min_len = Math.min(apra_first.length, mazooka_first.length);
-                    var max_len = Math.max(apra_first.length, mazooka_first.length);
-                    var substring_ratio = min_len / max_len;
-
-                    if (substring_ratio >= 0.93) { // Changed to 0.93 per requirements
-                        score += 0.5;
-                    }
-                } else {
-                    // Calculate similarity based on character overlap
-                    var apra_chars = new Set();
-                    var mazooka_chars = new Set();
-
-                    for (var i = 0; i < apra_first.length; i++) {
-                        apra_chars.add(apra_first[i]);
-                    }
-
-                    for (var i = 0; i < mazooka_first.length; i++) {
-                        mazooka_chars.add(mazooka_first[i]);
-                    }
-
-                    // Calculate common characters
-                    var common_chars = new Set();
-                    for (var char of apra_chars) {
-                        if (mazooka_chars.has(char)) {
-                            common_chars.add(char);
-                        }
-                    }
-
-                    var similarity = common_chars.size / Math.max(apra_chars.size, mazooka_chars.size);
-
-                    if (similarity >= 0.93) { // Changed to 0.93 per requirements
-                        score += 0.5;
-                    }
-                }
-            }
-            // Initial match (0.5 points) - only if no exact first name match
-            else if (apra_first && apra_first.length > 0 && 
-                     mazooka_first && mazooka_first.length > 0 && 
-                     apra_first[0] === mazooka_first[0]) {
-                score += 0.5;
-            }
-
-            // Name reversal handling
-            if (apra_first && apra_last && mazooka_first && mazooka_last) {
-                if (apra_first === mazooka_last && apra_last === mazooka_first) {
-                    // Complete reversal - give full score of 3.0
-                    score = Math.max(score, 3.0);
-                } else if (apra_first === mazooka_last || apra_last === mazooka_first) {
-                    // Partial reversal - give 1.5 points
-                    score = Math.max(score, 1.5);
-                }
-            }
-
-            return score;
-        }
-
-        return matchScore(APRA_FIRST, APRA_LAST, MAZOOKA_FIRST, MAZOOKA_LAST);
-        $$;
-        """).collect()
-
-        logger.info("Match score function created successfully")
+        print("Enhanced similarity UDF created successfully")
 
         # Filter for valid ISWCs that exist in both datasets
-        logger.info("Finding common ISWCs between datasets...")
+        print("Finding common ISWCs between datasets...")
 
         valid_iswcs_sql = """
         WITH adc_iswcs AS (
             SELECT DISTINCT ISWC 
-            FROM temp_adc_parsed 
+            FROM temp_adc_enhanced_parsed_phase3 
             WHERE ISWC IS NOT NULL
         ),
         mazooka_iswcs AS (
             SELECT DISTINCT ISWC 
-            FROM temp_mazooka_parsed 
+            FROM temp_mazooka_enhanced_parsed_phase3 
             WHERE ISWC IS NOT NULL
         )
         SELECT a.ISWC
@@ -862,267 +1096,221 @@ def phase3_matching(session):
         """
 
         valid_iswcs = session.sql(valid_iswcs_sql)
-        valid_iswcs.create_or_replace_temp_view("temp_valid_iswcs")
+        valid_iswcs.create_or_replace_temp_view("temp_valid_iswcs_enhanced_phase3")
 
         count_valid_iswcs = valid_iswcs.count()
-        logger.info(f"Found {count_valid_iswcs} ISWCs that exist in both datasets")
+        print(f"Found {count_valid_iswcs} ISWCs that exist in both datasets")
 
         # If no matching ISWCs, handle gracefully
         if count_valid_iswcs == 0:
-            logger.warning("No matching ISWCs found between datasets. Creating empty result.")
+            print("Warning: No matching ISWCs found between datasets. Creating empty result.")
             # Create an empty result dataframe with expected schema
             result_columns = [
-                "ROW_NUM", "APRA_NAME", "APRA_NAME_SCORE", "MATCH_STATUS", "MAZOOKA_NAME",
-                "MAZOOKA_NAME_SCORE", "NAME_MATCHED_SCORE", "WORK_ID", "TRACK_ID",
-                "ISWC", "MATCH_PERCENT", "YN_COMPOSERS_TRUNC"
+                "APRA_NAME", "ATAP", "MAZOOKA_NAME", "STAP", "MATCH_SCORE",
+                "SMP", "TAP", "WORK_ID", "TRACK_ID",
+                "ISWC", "ADC_COMPOSER_ID", "IPI", "YN_COMPOSERS_TRUNC", "MATCH_STATUS"  # Added MATCH_STATUS
             ]
             empty_df = session.create_dataframe([], schema=result_columns)
 
-            # Save empty results to a Snowflake table
-            import datetime
-            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            final_table_name = f"COMPOSER_NAME_MATCHING_RESULTS_{timestamp}"
-            empty_df.write.mode("overwrite").save_as_table(final_table_name)
+            # Save empty results to a Snowflake table if requested
+            if save_to_tables:
+                import datetime
+                timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                final_table_name = f"ENHANCED_COMPOSER_NAME_MATCHING_RESULTS_{timestamp}"
+                empty_df.write.mode("overwrite").save_as_table(final_table_name)
+                print(f"Saved empty results to {final_table_name}")
+            else:
+                final_table_name = "No table created (example mode)"
+                print("No matches found (no table created in example mode)")
 
-            logger.info(f"Saved empty results to {final_table_name}")
             return empty_df, final_table_name
-
-        # Calculate TAP (Total Achievable Points) for each work-track combination
-        logger.info("Calculating Total Achievable Points (TAP)...")
-
-        tap_calculation_sql = """
-        WITH adc_grouped AS (
-            SELECT 
-                APRA_WORK_ID, 
-                ISWC,
-                SUM(APRA_NAME_SCORE) AS ATAP
-            FROM 
-                temp_adc_parsed
-            WHERE
-                ISWC IN (SELECT ISWC FROM temp_valid_iswcs)
-            GROUP BY 
-                APRA_WORK_ID, ISWC
-        ),
-        mazooka_grouped AS (
-            SELECT 
-                TRACK_ID, 
-                ISWC,
-                SUM(MAZOOKA_NAME_SCORE) AS STAP
-            FROM 
-                temp_mazooka_parsed
-            WHERE
-                ISWC IN (SELECT ISWC FROM temp_valid_iswcs)
-            GROUP BY 
-                TRACK_ID, ISWC
-        )
-        SELECT 
-            a.APRA_WORK_ID,
-            m.TRACK_ID,
-            a.ISWC,
-            a.ATAP,
-            m.STAP,
-            GREATEST(a.ATAP, m.STAP) AS TAP
-        FROM 
-            adc_grouped a
-        JOIN 
-            mazooka_grouped m
-        ON 
-            a.ISWC = m.ISWC
-        """
-
-        tap_data = session.sql(tap_calculation_sql)
-        tap_data.create_or_replace_temp_view("temp_tap_data")
-
-        logger.info(f"Calculated TAP for {tap_data.count()} work-track combinations")
-
-        # Generate potential matches and calculate match scores
-        logger.info("Generating potential matches and calculating scores...")
 
         potential_matches_sql = """
         SELECT 
             a.APRA_NAME,
-            a.APRA_NAME_SCORE,
+            a.ADC_COMPOSER_ID,
+            a.IPI,
+            a.APRA_NAME_SCORE as ATAP,
             m.MAZOOKA_NAME,
-            m.MAZOOKA_NAME_SCORE,
-            MATCH_SCORE_SQL(a.APRA_FIRST_NAME, a.APRA_LAST_NAME, m.MAZOOKA_FIRST_NAME, m.MAZOOKA_LAST_NAME) AS NAME_MATCHED_SCORE,
+            m.MAZOOKA_NAME_SCORE as STAP,
+            GREATEST(a.APRA_NAME_SCORE, m.MAZOOKA_NAME_SCORE) as TAP,
+            ENHANCED_NAME_SIMILARITY_SCORE(
+                a.APRA_NAME, 
+                m.MAZOOKA_NAME,
+                a.APRA_NAME_SCORE,
+                m.MAZOOKA_NAME_SCORE
+            ) AS NAME_SIMILARITY_OBJ,
+            ENHANCED_NAME_SIMILARITY_SCORE(
+                a.APRA_NAME, 
+                m.MAZOOKA_NAME,
+                a.APRA_NAME_SCORE,
+                m.MAZOOKA_NAME_SCORE
+            ):smp::FLOAT AS SMP,
+            ENHANCED_NAME_SIMILARITY_SCORE(
+                a.APRA_NAME, 
+                m.MAZOOKA_NAME,
+                a.APRA_NAME_SCORE,
+                m.MAZOOKA_NAME_SCORE
+            ):score::FLOAT AS MATCH_SCORE,
             a.APRA_WORK_ID AS WORK_ID,
             m.TRACK_ID,
             a.ISWC,
-            t.TAP,
             a.YN_COMPOSERS_TRUNC
         FROM 
-            temp_adc_parsed a
+            temp_adc_enhanced_parsed_phase3 a
         JOIN 
-            temp_mazooka_parsed m
+            temp_mazooka_enhanced_parsed_phase3 m
         ON 
             a.ISWC = m.ISWC
-        JOIN 
-            temp_tap_data t
-        ON 
-            a.APRA_WORK_ID = t.APRA_WORK_ID 
-            AND m.TRACK_ID = t.TRACK_ID
-            AND a.ISWC = t.ISWC
         WHERE
-            MATCH_SCORE_SQL(a.APRA_FIRST_NAME, a.APRA_LAST_NAME, m.MAZOOKA_FIRST_NAME, m.MAZOOKA_LAST_NAME) > 0
+            a.ISWC IN (SELECT ISWC FROM temp_valid_iswcs_enhanced_phase3)
         """
 
         potential_matches = session.sql(potential_matches_sql)
-        potential_matches.create_or_replace_temp_view("temp_potential_matches")
+        potential_matches.create_or_replace_temp_view("temp_potential_matches_enhanced_phase3")
 
-        logger.info(f"Generated {potential_matches.count()} potential matches with positive scores")
-
-        # Calculate Sum of Matched Points (SMP) and Match Percentage for each work-track combination
-        logger.info("Calculating SMP and Match Percentage...")
-
-        work_match_aggregation_sql = """
-        SELECT
-            WORK_ID,
-            TRACK_ID,
-            ISWC,
-            TAP,
-            SUM(NAME_MATCHED_SCORE) AS SMP
-        FROM
-            temp_potential_matches
-        GROUP BY
-            WORK_ID, TRACK_ID, ISWC, TAP
+        # Count only matches with score > 0
+        positive_matches_sql = """
+        SELECT COUNT(*) AS positive_match_count
+        FROM temp_potential_matches_enhanced_phase3
+        WHERE MATCH_SCORE > 0
         """
+        positive_match_count = session.sql(positive_matches_sql).collect()[0]["POSITIVE_MATCH_COUNT"]
+        print(f"Of these, {positive_match_count} matches have a score > 0")
 
-        work_match_aggregation = session.sql(work_match_aggregation_sql)
-        work_match_aggregation.create_or_replace_temp_view("temp_work_match_aggregation")
+        print("Creating final output with matching results...")
 
-        # Final results with match percentage
-        logger.info("Generating final results...")
-
-        final_results_sql = """
-        SELECT 
-            p.APRA_NAME,
-            p.APRA_NAME_SCORE,
-            'match' AS MATCH_STATUS,
-            p.MAZOOKA_NAME,
-            p.MAZOOKA_NAME_SCORE,
-            p.NAME_MATCHED_SCORE,
-            p.WORK_ID,
-            p.TRACK_ID,
-            p.ISWC,
-            CASE 
-                WHEN a.TAP > 0 THEN ROUND((a.SMP / a.TAP) * 100)
-                ELSE 0
-            END AS MATCH_PERCENT,
-            p.YN_COMPOSERS_TRUNC
-        FROM 
-            temp_potential_matches p
-        JOIN
-            temp_work_match_aggregation a
-        ON
-            p.WORK_ID = a.WORK_ID
-            AND p.TRACK_ID = a.TRACK_ID
-            AND p.ISWC = a.ISWC
-        """
-
-        result_df = session.sql(final_results_sql)
-
-        # Add row numbers
-        logger.info("Adding row numbers...")
-
-        row_number_sql = """
-        SELECT 
-            ROW_NUMBER() OVER (ORDER BY WORK_ID, TRACK_ID, APRA_NAME) AS ROW_NUM,
+        formatted_output_sql = """
+        SELECT DISTINCT
             APRA_NAME, 
-            APRA_NAME_SCORE, 
-            MATCH_STATUS, 
+            ATAP, 
             MAZOOKA_NAME, 
-            MAZOOKA_NAME_SCORE, 
-            NAME_MATCHED_SCORE, 
+            STAP, 
+            MATCH_SCORE, 
+            SMP,
+            TAP,
             WORK_ID, 
             TRACK_ID, 
             ISWC, 
-            MATCH_PERCENT, 
-            YN_COMPOSERS_TRUNC
+            ADC_COMPOSER_ID,
+            IPI,
+            YN_COMPOSERS_TRUNC,
+            'match' AS MATCH_STATUS  -- Added match status column
         FROM 
-            (SELECT * FROM ({0}))
-        """.format(final_results_sql)
+            temp_potential_matches_enhanced_phase3
+        WHERE 
+            MATCH_SCORE > 0  -- Only include rows with positive match scores
+        ORDER BY
+            ISWC, WORK_ID, TRACK_ID, MATCH_SCORE DESC
+        """
 
-        result_df = session.sql(row_number_sql)
+        result_df = session.sql(formatted_output_sql)
 
-        # Debug final result
         result_count = result_df.count()
-        logger.info(f"Generated {result_count} matches in final result")
 
-        if result_count > 0:
-            logger.info("Sample result data:")
-            sample_results = result_df.limit(5).collect()
-            logger.info(str(sample_results))
+        # Save final results to a Snowflake table if requested
+        if save_to_tables:
+            import datetime
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            final_table_name = f"ENHANCED_COMPOSER_NAME_MATCHING_RESULTS_{timestamp}"
+            result_df.write.mode("overwrite").save_as_table(final_table_name)
+            print(f"Successfully wrote {result_count} results to final table: {final_table_name}")
+        else:
+            final_table_name = "No table created (example mode)"
+            print(f"Example mode: {result_count} results generated (no table created)")
 
-        # Save final results to a Snowflake table
-        import datetime
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        final_table_name = f"COMPOSER_NAME_MATCHING_RESULTS_{timestamp}"
-        result_df.write.mode("overwrite").save_as_table(final_table_name)
-
-        logger.info(f"Successfully wrote {result_count} results to final table: {final_table_name}")
-        logger.info("Name matching process complete!")
+        print("Enhanced name matching process complete!")
 
         return result_df, final_table_name
     except Exception as e:
-        logger.error(f"Error in phase3_matching: {str(e)}", exc_info=True)
+        print(f"Error in phase3_enhanced_matching: {str(e)}")
         # Print the full traceback for better debugging
         import traceback
-        logger.error(traceback.format_exc())
+        print(traceback.format_exc())
         raise
 
 
-def cleanup_temp_tables(session):
+def cleanup_temp_tables(session, enhanced=False):
     """Delete all temporary tables created during the process"""
     try:
         # List of temporary tables to drop
         temp_tables = [
             "PHASE1_CLEANED_ADC_COMPOSERS",
             "PHASE1_CLEANED_MAZOOKA_COMPOSERS",
-            "PHASE1_WORK_DATA_WITH_FLAGS",
-            "PHASE2_ADC_PARSED_NAMES",
-            "PHASE2_MAZOOKA_PARSED_NAMES"
+            "PHASE1_WORK_DATA_WITH_FLAGS"
         ]
+
+        if enhanced:
+            temp_tables.extend([
+                "PHASE2_ADC_ENHANCED_PARSED_NAMES",
+                "PHASE2_MAZOOKA_ENHANCED_PARSED_NAMES"
+            ])
+        else:
+            temp_tables.extend([
+                "PHASE2_ADC_PARSED_NAMES",
+                "PHASE2_MAZOOKA_PARSED_NAMES"
+            ])
 
         # Drop each table
         for table in temp_tables:
-            logger.info(f"Dropping temporary table: {table}")
+            print(f"Dropping temporary table: {table}")
             session.sql(f"DROP TABLE IF EXISTS {table}").collect()
 
-        logger.info("All temporary tables have been dropped successfully")
+        print("All temporary tables have been dropped successfully")
     except Exception as e:
-        logger.error(f"Error while cleaning up temporary tables: {str(e)}")
-        logger.warning("Continuing execution despite cleanup errors")
+        print(f"Error while cleaning up temporary tables: {str(e)}")
+        print("Continuing execution despite cleanup errors")
 
 
-def main(session):
-    """Main function to orchestrate the three-phase name matching process"""
-    logger.info("Starting name matching process with three-phase approach...")
+def main(session, use_example_data=False):
+    """Main function that uses the enhanced name matching approach"""
+
+    print("Initiating enhanced name matching process...")
+
+    save_to_tables = not use_example_data
 
     try:
-        # Execute Phase 1: Preprocessing and truncation identification
-        logger.info("=== PHASE 1: PREPROCESSING AND TRUNCATION IDENTIFICATION ===")
-        phase1_results = phase1_preprocessing(session)
+        # Load example data if requested
+        example_data = None
+        if use_example_data:
+            print("=== USING EXAMPLE DATASET ===")
+            example_data = create_example_dataset(session)
 
-        # Execute Phase 2: Name parsing and score generation
-        logger.info("\n=== PHASE 2: NAME PARSING AND SCORE GENERATION ===")
-        phase2_results = phase2_name_parsing(session)
+        print("=== PHASE 1: PREPROCESSING AND TRUNCATION IDENTIFICATION ===")
+        phase1_results = phase1_preprocessing(session, use_example_data, example_data, save_to_tables)
 
-        # Execute Phase 3: Match score generation and final output
-        logger.info("\n=== PHASE 3: MATCH SCORE GENERATION AND FINAL OUTPUT ===")
-        final_results, final_table_name = phase3_matching(session)
+        print("\n=== PHASE 2: ENHANCED NAME PARSING WITH FLEXIBLE FORMAT HANDLING ===")
+        phase2_results = phase2_enhanced_name_parsing(session, use_example_data, phase1_results, save_to_tables)
+
+        print("\n=== PHASE 3: ENHANCED MATCH SCORE GENERATION WITH FLEXIBLE FORMAT HANDLING ===")
+        final_results, final_table_name = phase3_enhanced_matching(session, use_example_data, phase2_results,
+                                                                   save_to_tables)
 
         # Clean up temporary tables
-        logger.info("\n=== CLEANING UP TEMPORARY TABLES ===")
-        cleanup_temp_tables(session)
+        if not use_example_data:
+            print("\n=== CLEANING UP TEMPORARY TABLES ===")
+            cleanup_temp_tables(session, enhanced=True)
 
-        logger.info("\nAll phases completed successfully!")
-        logger.info(f"Final results saved to table: {final_table_name}")
+        print("\nEnhanced name matching process completed successfully!")
+
+        if use_example_data:
+            print("\n=== EXAMPLE DATASET RESULTS ===")
+
+            pd_results = final_results.to_pandas()
+            print(pd_results.to_string(index=False))
+        else:
+            print(f"Final results saved to table: {final_table_name}")
 
         return final_results
     except Exception as e:
-        logger.error(f"Error in main function: {str(e)}", exc_info=True)
+        print(f"Error in main_enhanced function: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         raise
 
 
-# In a Snowpark notebook, execute this line to run the process
+# Execute the enhanced name matching process
 final_results = main(session)
+
+# For testing with example data:
+# final_results = main(session, use_example_data=True)
