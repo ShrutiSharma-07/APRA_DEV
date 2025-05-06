@@ -70,7 +70,7 @@ def match_with_delimiter_handling(adc_name, mazooka_name, debug=False):
     if debug:
         print(f"Comparing:\nADC: {adc_original}\nMZK: {mazooka_original}")
 
-    # IMPROVED FIX 1: Better handling for common suffixes like "& HIS ORCHESTRA"
+    # Handling common suffixes like "& HIS ORCHESTRA"
     common_suffixes = [
         " & HIS ORCHESTRA", " AND HIS ORCHESTRA",
         " & HER ORCHESTRA", " AND HER ORCHESTRA",
