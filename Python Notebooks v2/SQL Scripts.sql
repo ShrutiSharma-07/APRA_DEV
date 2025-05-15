@@ -1,0 +1,53 @@
+--cross join, get table use that as input -> partition 
+
+CREATE OR REPLACE TABLE ADC_MZK_VARIANTS_CROSS_JOIN_1 AS
+SELECT 
+    a.apra_work_id,
+    a.title_variant as apra_title, 
+    b.track_id AS muzooka_track_id,
+    b.title_variant AS muzooka_title,
+    UPPER(REGEXP_REPLACE(a.ISWC, '[^A-Za-z0-9]', '')) AS apra_iswc,
+    b.iswc as muzooka_iswc
+FROM 
+    adc_works_title_variants_part_1 a --use 100 sample
+CROSS JOIN 
+    mzk_tracks_title_variants b
+WHERE 
+    a.title_variant is not null and b.title_variant is not null 
+    and 
+    a.title_variant <> '' and b.title_variant <> '';
+
+
+
+--  create composer tables
+CREATE OR REPLACE TABLE EDW_APPS.MATCHING.MUZOOKA_MATCHED_COMPOSER_TRACKS AS
+SELECT DISTINCT 
+    C.COMPOSER_ID,
+    UPPER(C.TRACK_ID) AS TRACK_ID,
+    UPPER(C.COMPOSER) AS COMPOSER,
+    UPPER(C.IPI) AS IPI,
+    UPPER(C.STATUS) AS STATUS
+FROM EDW_APPS.MATCHING.COMPOSERS C
+INNER JOIN EDW_APPS.MATCHING.TITLE_VARIANT_COMPLETE_RESULTS T
+ON UPPER(C.TRACK_ID) = UPPER(T.MUZOOKA_TRACK_ID);
+
+
+
+
+CREATE OR REPLACE TABLE EDW_APPS.MATCHING.ADC_MATCHED_COMPOSER_WORKS AS
+SELECT DISTINCT 
+    C.*,
+    T.MUZOOKA_TRACK_ID
+FROM EDW_APPS.MATCHING.ADCCOMPOSERS C
+INNER JOIN EDW_APPS.MATCHING.TITLE_VARIANT_COMPLETE_RESULTS T
+ON C.APRA_WORK_ID = T.APRA_WORK_ID;
+
+
+
+--test
+SELECT A.APRA_WORK_ID, M.TRACK_ID, M.COMPOSER, A.NAME, JAROWINKLER_SIMILARITY(A.NAME, M.COMPOSER)
+FROM ADC_MATCHED_COMPOSER_WORKS A
+INNER JOIN MUZOOKA_MATCHED_COMPOSER_TRACKS M
+WHERE A.MUZOOKA_TRACK_ID = M.TRACK_ID AND JAROWINKLER_SIMILARITY(A.NAME, M.COMPOSER) > 85
+
+
