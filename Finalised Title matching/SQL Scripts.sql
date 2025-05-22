@@ -120,15 +120,51 @@ SELECT DISTINCT
     UPPER(C.COMPOSER) AS COMPOSER_NAME,
 	C.IPI, 
 FROM COMPOSERS C
-INNER JOIN FUZZY_TITLE_MATCHING F
-ON UPPER(C.TRACK_ID) = F.MUZOOKA_TRACK_ID);
+INNER JOIN adc_works_title_matches_combined F
+ON UPPER(C.TRACK_ID) = UPPER(F.MUZOOKA_TRACK_ID));
 
 
 
 
 
+CREATE OR REPLACE TABLE adc_works_exact_match_composer_names AS (
+  WITH cte1 AS (
+    SELECT *
+    FROM adc_works_tracks_matched_composers 
+  ),
+  cte2 AS (
+    SELECT *
+    FROM mzk_tracks_works_matched_composers
+  )
+  SELECT DISTINCT
+    cte1.adc_composer_id, 
+    cte1.apra_work_id,
+    cte1.muzooka_track_id,
+    cte1.ipi,
+    cte1.composer_name as apra_composer_name,
+    cte2.composer_name as muzooka_composer_name,
+    100 AS composer_match_score,
+    CASE WHEN cte1.IPI = cte2.IPI THEN 'Y' ELSE 'N' END AS YN_IPI_MATCH
+  FROM cte1 
+  JOIN cte2
+  ON UPPER(cte1.composer_name) = UPPER(cte2.composer_name)
+  -- where cte1.apra_work_id = 'GW00577031'
+);
 
 
 
 
-
+CREATE OR REPLACE TABLE adc_works_non_exact_match_composer_names AS
+SELECT DISTINCT
+      a.adc_composer_id,
+      a.apra_work_id,
+      a.composer_name as apra_composer_name,
+      a.ipi,
+      a.muzooka_track_id
+FROM adc_works_tracks_matched_composers a
+WHERE a.composer_name <> '' -- Filter empty titles first for better performance
+AND NOT EXISTS (
+  SELECT 1 
+  FROM mzk_tracks_works_matched_composers m
+  WHERE UPPER(a.composer_name) = UPPER(m.composer_name)
+);
