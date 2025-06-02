@@ -107,7 +107,7 @@ WHERE
 -- COMPOSERS
 
 create or replace TABLE EDW_APPS.MATCHING.ADC_WORKS_TRACKS_MATCHED_COMPOSERS AS (
-SELECT
+SELECT DISTINCT
   F.RDC_WORKS_ID,
 	A.ADC_COMPOSER_ID, 
 	A.APRA_WORK_ID, 
@@ -115,7 +115,7 @@ SELECT
 	UPPER(A.NAME) AS COMPOSER_NAME,
 	F.MUZOOKA_TRACK_ID 
 FROM ADCCOMPOSERS A
-INNER JOIN ADC_WORKS_TITLE_MATCHES_COMBINED F
+INNER JOIN ADC_WORKS_COLUMNS_TITLE_MATCHES_COMBINED F
 ON A.APRA_WORK_ID = F.APRA_WORK_ID);
 
 
@@ -127,7 +127,7 @@ SELECT DISTINCT
     UPPER(C.COMPOSER) AS COMPOSER_NAME,
 	C.IPI, 
 FROM COMPOSERS C
-INNER JOIN adc_works_title_matches_combined F
+INNER JOIN ADC_WORKS_COLUMNS_TITLE_MATCHES_COMBINED F
 ON UPPER(C.TRACK_ID) = UPPER(F.MUZOOKA_TRACK_ID));
 
 
@@ -150,7 +150,30 @@ INNER JOIN sampled_ids s ON t.apra_work_id = s.apra_work_id;
 
 --ARTISTS
 
-create or replace table adc_works_tracks_matched_artists as (
+-- create or replace table adc_works_tracks_matched_artists as (
+-- select distinct 
+--    b.rdc_works_id,
+--    a.apra_work_id,
+--    a.apra_artist_id,
+--    b.muzooka_track_id,
+--    UPPER(a.name) as apra_artist_name
+--    from adcartists a
+--    inner join adc_composer_delimiter_count_clean b
+--    on a.apra_work_id = b.apra_work_id );
+
+
+
+-- create or replace table mzk_tracks_matched_artists as (
+-- select distinct 
+--    a.recordings_id,
+--    UPPER(a.track_id) as muzooka_track_id,
+--    UPPER(a.artist_name) as muzooka_artist_name
+--    from recordings a
+--    inner join adc_composer_delimiter_count_clean b
+--    on UPPER(a.track_id) = b.muzooka_track_id );
+
+
+create or replace table adc_artists_intermediate as (
 select distinct 
    b.rdc_works_id,
    a.apra_work_id,
@@ -158,9 +181,8 @@ select distinct
    b.muzooka_track_id,
    UPPER(a.name) as apra_artist_name
    from adcartists a
-   inner join adc_composer_delimiter_count_clean b
+   inner join ADC_COMPOSERS_INTERMIEDIATE b
    on a.apra_work_id = b.apra_work_id );
-
 
 
 create or replace table mzk_tracks_matched_artists as (
@@ -169,5 +191,88 @@ select distinct
    UPPER(a.track_id) as muzooka_track_id,
    UPPER(a.artist_name) as muzooka_artist_name
    from recordings a
-   inner join adc_composer_delimiter_count_clean b
+   inner join ADC_WORKS_TRACKS_MATCHED_COMPOSERS b
    on UPPER(a.track_id) = b.muzooka_track_id );
+
+
+--OMMITTED AND USED FULL 
+CREATE OR REPLACE TEMPORARY TABLE artist_sampled_ids AS
+SELECT DISTINCT apra_work_id
+FROM ADC_ARTISTS_INTERMEDIATE
+SAMPLE (0.0002);
+
+CREATE OR REPLACE TABLE ADC_ARTISTS_INTERMIEDIATE_WITH_SAMPLE AS
+SELECT t.*
+FROM ADC_ARTISTS_INTERMEDIATE t
+INNER JOIN artist_sampled_ids s ON t.apra_work_id = s.apra_work_id;
+
+select * from ADC_ARTISTS_INTERMIEDIATE_WITH_SAMPLE
+
+
+
+---FINAL TABLE
+
+CREATE or replace TABLE ADC_WORKS_ARTISTS_COMPOSERS_MATCHED AS (
+SELECT DISTINCT
+    t1.RDC_WORKS_ID,
+    t1.APRA_WORK_ID,
+    t1.APRA_ORIGINAL_TITLE as APRA_TITLE,
+    t1.APRA_ISWC,
+    t1.MUZOOKA_TRACK_ID,
+    UPPER(t1.MUZOOKA_ORIGINAL_TITLE) as MUZOOKA_TITLE,
+    --t1.MUZOOKA_CLEANED_TITLE as MUZOOKA_TITLE,
+    t1.MUZOOKA_ISWC,
+    (t1.MATCH_SCORE)/100 AS TITLE_MATCH_SCORE,
+    t1.YN_ISWC_MATCH,
+    t3.adc_total_composers AS APRA_COMPOSER_CT,
+    t3.mzk_total_composers AS MUZOOKA_COMPOSER_CT,
+    (t3.composer_mtch_pcntg)*100 as WRITER_MATCH_PERCENTAGE,
+    t4.artist_match_total AS ARTIST_MATCH_SCORE,
+    t1.CD_TYPE,
+    CASE 
+        WHEN t1.YN_PERF_OWNERSHIP = 'N' 
+             AND (LENGTH(t2.COMPOSER_NAMES) = 40 
+                  OR (LENGTH(t2.COMPOSER_NAMES) = 39 AND RIGHT(t2.COMPOSER_NAMES, 1) = ' ')) 
+                      AND (t3.adc_total_composers < t3.mzk_total_composers)
+        THEN 'Y'
+        ELSE 'N'
+    END AS YN_COMPOSERS_TRUNCATED
+FROM ADC_WORKS_COLUMNS_TITLE_MATCHES_COMBINED_1 t1
+INNER JOIN ADCWORKS t2 
+            ON t1.APRA_WORK_ID = t2.APRA_WORK_ID 
+INNER JOIN COMPOSER_PART_BY_PART_MATCH_FULL t3 
+            ON t1.APRA_WORK_ID = t3.APRA_WORK_ID 
+            AND T1.MUZOOKA_TRACK_ID = T3.MUZOOKA_TRACK_ID
+LEFT JOIN ARTIST_PART_BY_PART_MATCH_FULL t4
+            ON t1.APRA_WORK_ID = t4.APRA_WORK_ID 
+            AND T1.MUZOOKA_TRACK_ID = T4.MUZOOKA_TRACK_ID
+--WHERE T1.APRA_WORK_ID = 'GW33624310'
+);
+
+
+
+
+--- ISRC MATCHING 
+CREATE OR REPLACE TABLE ISRC_WITH_WORKS_TRACKS AS (
+WITH DISTINCT_TITLE_MATCHES AS (
+    SELECT DISTINCT 
+           APRA_WORK_ID,
+           MUZOOKA_TRACK_ID,
+           RDC_WORKS_ID
+    FROM ADC_WORKS_COLUMNS_TITLE_MATCHES_COMBINED_1
+)
+SELECT 
+    ROW_NUMBER() OVER (ORDER BY i.ADC_ISRC_ID) AS RDC_ISRC_ID,
+    c.RDC_WORKS_ID,
+    i.APRA_WORK_ID,
+    c.MUZOOKA_TRACK_ID,
+    i.ISRC,
+    CASE WHEN r.isrc = i.ISRC THEN 'Y' ELSE 'N' END AS YN_ISRC_MATCH,
+FROM 
+    DISTINCT_TITLE_MATCHES c
+    INNER JOIN ADCISRC i
+        ON i.APRA_WORK_ID = c.APRA_WORK_ID
+    INNER JOIN recordings r
+        ON c.MUZOOKA_TRACK_ID = UPPER(r.track_id)
+--WHERE I.APRA_WORK_ID = 'GW33624310'
+);
